@@ -200,3 +200,62 @@ def test_rerank_top_k_log_callback_called():
         )
     assert len(log_messages) == 1
     assert "rerank" in log_messages[0].lower() or "ре-ранк" in log_messages[0]
+
+
+# ---------------------------------------------------------------------------
+# Wave 4.4 — temperature default pinning (regression guard)
+# ---------------------------------------------------------------------------
+# Rationale: provider defaults vary (OpenAI 1.0, Qwen 0.7, Anthropic 1.0).
+# Plan §3 W4 requires a deterministic-but-flexible 0.2 default for reranking —
+# higher temperature produced flakier label picks in manual eval. These tests
+# pin both the signature default and that it reaches the provider request.
+
+def test_rerank_top_k_default_temperature_is_pinned():
+    """The signature default for `temperature` must stay 0.2 (Wave 4.4 contract).
+
+    If a future refactor changes this default, rerank quality drifts silently.
+    Bump this test *and* docs/adr/000X-*.md together when changing the default.
+    """
+    import inspect
+
+    sig = inspect.signature(rerank_top_k)
+    assert sig.parameters["temperature"].default == pytest.approx(0.2), (
+        "rerank_top_k temperature default drifted from 0.2 — see plan §3 W4.4."
+    )
+
+
+def test_rerank_top_k_forwards_temperature_to_llmclient():
+    """Default call must forward temperature=0.2 to LLMClient.complete_text."""
+    captured: dict = {}
+
+    def _spy(**kwargs):
+        captured.update(kwargs)
+        return "cls_a"
+
+    with patch("llm_reranker.LLMClient.complete_text", side_effect=_spy):
+        rerank_top_k(
+            texts=["текст"],
+            top_candidates=[["cls_a", "cls_b"]],
+            argmax_labels=["cls_b"],
+            provider="openai", model="gpt-4o-mini", api_key="test",
+        )
+    assert captured.get("temperature") == pytest.approx(0.2)
+
+
+def test_rerank_top_k_explicit_temperature_override():
+    """Explicit temperature must override the 0.2 default (e.g. temperature=0.0)."""
+    captured: dict = {}
+
+    def _spy(**kwargs):
+        captured.update(kwargs)
+        return "cls_a"
+
+    with patch("llm_reranker.LLMClient.complete_text", side_effect=_spy):
+        rerank_top_k(
+            texts=["текст"],
+            top_candidates=[["cls_a", "cls_b"]],
+            argmax_labels=["cls_b"],
+            provider="openai", model="gpt-4o-mini", api_key="test",
+            temperature=0.0,
+        )
+    assert captured.get("temperature") == pytest.approx(0.0)

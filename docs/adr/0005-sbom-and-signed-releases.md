@@ -1,7 +1,15 @@
 # ADR-0005: SBOM, signed releases, and blocking supply-chain audit
 
 ## Status
-Proposed (target: Wave 6).
+Partially implemented (Wave 6, Batch D — 2026-04-18):
+
+| Item | State |
+|---|---|
+| CycloneDX JSON SBOM per CI run | ✅ Landed in `quality-gates.yml` (`supply-chain` job, uploaded as `sbom-cyclonedx` artifact) |
+| `pip-audit` against `requirements.lock` on every PR | ✅ Landed — warn-only, OSV vulnerability service |
+| `pip-audit` blocking on HIGH+ severity | ⏳ Pending (future wave — `.pip-audit-ignore.toml` allow-list with expiry dates) |
+| Cosign keyless signed releases + SLSA provenance | ⏳ Pending (future wave — needs `id-token: write` perm + GitHub OIDC wiring) |
+| PyInstaller reproducibility build-info JSON | ⏳ Pending (future wave) |
 
 ## Context
 Current supply-chain posture:
