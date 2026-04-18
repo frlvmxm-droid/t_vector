@@ -16,7 +16,8 @@ import traceback as _traceback
 from collections import Counter
 from dataclasses import dataclass as _dc_dataclass, field as _dc_field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from types import MappingProxyType
+from typing import Any, Dict, List, Mapping, Optional
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -1962,24 +1963,33 @@ class ClusterTabMixin:
         use_inc_model: bool = False
         hdbscan_proba: _Any = None   # soft membership [0..1] per sample after HDBSCAN fit
 
+    @staticmethod
+    def _freeze_snap(snap: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Return a read-only view of *snap* for handoff to pure pipeline stages."""
+        if isinstance(snap, MappingProxyType):
+            return snap
+        return MappingProxyType(dict(snap))
+
     def _cluster_prepare_data(self, files_snapshot: List[str], snap: Dict[str, Any]):
         """Stage: prepare_inputs (pipeline adapter for orchestration layer)."""
-        prepared_inputs = prepare_inputs(files_snapshot, snap)
+        frozen = self._freeze_snap(snap)
+        prepared_inputs = prepare_inputs(files_snapshot, frozen)
         role_ctx = prepared_inputs.role_context
         return prepared_inputs, role_ctx.cluster_snap, role_ctx.role_label, role_ctx.ignore_chatbot_label
 
     def _cluster_fit_predict(self, prepared_inputs, snap: Dict[str, Any]):
         """Stage: fit/predict adapters (no behavior change in this refactor step)."""
-        vectors_stage = build_vectors(prepared_inputs, snap)
-        return run_clustering(vectors_stage, snap)
+        frozen = self._freeze_snap(snap)
+        vectors_stage = build_vectors(prepared_inputs, frozen)
+        return run_clustering(vectors_stage, frozen)
 
     def _cluster_postprocess(self, cluster_stage, prepared_inputs, snap: Dict[str, Any]):
         """Stage: postprocess adapter (no behavior change in this refactor step)."""
-        return postprocess_clusters(cluster_stage, prepared_inputs, snap)
+        return postprocess_clusters(cluster_stage, prepared_inputs, self._freeze_snap(snap))
 
     def _cluster_export(self, post_stage, snap: Dict[str, Any]):
         """Stage: export adapter (no behavior change in this refactor step)."""
-        return export_cluster_outputs(post_stage, snap)
+        return export_cluster_outputs(post_stage, self._freeze_snap(snap))
 
     def export_cluster_results(self):
         """Копирует последние файлы кластеризации в выбранную папку."""

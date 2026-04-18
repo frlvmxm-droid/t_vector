@@ -145,3 +145,48 @@ def test_prepare_only_calls_prepare_inputs():
 
     mock_prep.assert_called_once_with(["/f.xlsx"], snap)
     assert result is prepared
+
+
+# ---------------------------------------------------------------------------
+# W3.5 / W3.3 — snap is frozen at service boundary (MappingProxyType)
+# ---------------------------------------------------------------------------
+
+def test_run_freezes_snap_before_handoff():
+    """Pipeline stages must receive a read-only mapping view of snap."""
+    from types import MappingProxyType as _MPT
+
+    prepared, vectors, cluster, post, export = _make_mock_stages()
+    snap = {"cluster_algo": "kmeans", "k_clusters": 3}
+
+    with patch("cluster_workflow_service.prepare_inputs", return_value=prepared) as p_prep, \
+         patch("cluster_workflow_service.build_vectors", return_value=vectors) as p_bv, \
+         patch("cluster_workflow_service.run_clustering", return_value=cluster), \
+         patch("cluster_workflow_service.postprocess_clusters", return_value=post), \
+         patch("cluster_workflow_service.export_cluster_outputs", return_value=export):
+
+        ClusteringWorkflow.run(files_snapshot=[], snap=snap)
+
+    handed_to_prepare = p_prep.call_args.args[1]
+    handed_to_bv = p_bv.call_args.args[1]
+    assert isinstance(handed_to_prepare, _MPT)
+    assert isinstance(handed_to_bv, _MPT)
+    # equality with the original dict still holds
+    assert handed_to_prepare == snap
+
+
+def test_run_accepts_already_frozen_snap_without_rewrap():
+    """Passing a MappingProxyType in should be forwarded as-is."""
+    from types import MappingProxyType as _MPT
+
+    prepared, vectors, cluster, post, export = _make_mock_stages()
+    frozen_in = _MPT({"cluster_algo": "kmeans"})
+
+    with patch("cluster_workflow_service.prepare_inputs", return_value=prepared) as p_prep, \
+         patch("cluster_workflow_service.build_vectors", return_value=vectors), \
+         patch("cluster_workflow_service.run_clustering", return_value=cluster), \
+         patch("cluster_workflow_service.postprocess_clusters", return_value=post), \
+         patch("cluster_workflow_service.export_cluster_outputs", return_value=export):
+
+        ClusteringWorkflow.run(files_snapshot=[], snap=frozen_in)
+
+    assert p_prep.call_args.args[1] is frozen_in

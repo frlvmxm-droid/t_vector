@@ -13,7 +13,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional
+from types import MappingProxyType
+from typing import Any, Callable, Dict, List, Mapping, Optional
 
 from app_cluster_pipeline import (
     PreparedInputs,
@@ -64,25 +65,29 @@ class ClusteringWorkflow:
         -------
         ClusterRunResult with export summary and top-level statistics.
         """
+        frozen_snap: Mapping[str, Any] = (
+            snap if isinstance(snap, MappingProxyType) else MappingProxyType(dict(snap))
+        )
+
         if log_cb:
             log_cb("[ClusteringWorkflow] Подготовка данных…")
-        prepared: PreparedInputs = prepare_inputs(files_snapshot, snap)
+        prepared: PreparedInputs = prepare_inputs(files_snapshot, frozen_snap)
 
         if log_cb:
             log_cb("[ClusteringWorkflow] Векторизация…")
-        vectors_stage = build_vectors(prepared, snap)
+        vectors_stage = build_vectors(prepared, frozen_snap)
 
         if log_cb:
             log_cb("[ClusteringWorkflow] Кластеризация…")
-        cluster_stage: ClusterResult = run_clustering(vectors_stage, snap)
+        cluster_stage: ClusterResult = run_clustering(vectors_stage, frozen_snap)
 
         if log_cb:
             log_cb("[ClusteringWorkflow] Постобработка…")
-        post_stage: PostprocessResult = postprocess_clusters(cluster_stage, prepared, snap)
+        post_stage: PostprocessResult = postprocess_clusters(cluster_stage, prepared, frozen_snap)
 
         if log_cb:
             log_cb("[ClusteringWorkflow] Экспорт…")
-        export: ExportSummary = export_cluster_outputs(post_stage, snap)
+        export: ExportSummary = export_cluster_outputs(post_stage, frozen_snap)
 
         labels = cluster_stage.labels if cluster_stage else None
         n_clusters = 0
@@ -112,4 +117,7 @@ class ClusteringWorkflow:
         snap: Dict[str, Any],
     ) -> PreparedInputs:
         """Run only the data-preparation stage (useful for testing)."""
-        return prepare_inputs(files_snapshot, snap)
+        frozen_snap: Mapping[str, Any] = (
+            snap if isinstance(snap, MappingProxyType) else MappingProxyType(dict(snap))
+        )
+        return prepare_inputs(files_snapshot, frozen_snap)
