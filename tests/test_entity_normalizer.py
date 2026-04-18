@@ -359,3 +359,35 @@ class TestCombinations:
     def test_original_date_removed(self):
         result = normalize_entities("Дата 01.01.2024")
         assert "01.01.2024" not in result
+
+
+# ---------------------------------------------------------------------------
+# Лимит длины входа — защита от ReDoS
+# ---------------------------------------------------------------------------
+
+class TestInputLengthLimit:
+    def test_long_input_truncated(self, monkeypatch):
+        monkeypatch.setenv("MAX_NORMALIZE_INPUT_LEN", "50")
+        text = "нормально " + ("1 " * 5000) + "руб"
+        result = normalize_entities(text)
+        assert len(result) <= 60
+
+    def test_short_input_unchanged_length(self):
+        text = "Платёж 100 руб"
+        result = normalize_entities(text)
+        assert "[СУММА]" in result
+
+    def test_empty_string_returns_empty(self):
+        assert normalize_entities("") == ""
+
+    def test_pathological_input_completes_quickly(self):
+        import time as _t
+        pathological = "1 " * 20000 + "руб"
+        start = _t.time()
+        normalize_entities(pathological)
+        assert _t.time() - start < 2.0, "regex backtracking took too long"
+
+    def test_invalid_env_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setenv("MAX_NORMALIZE_INPUT_LEN", "not-an-int")
+        result = normalize_entities("Платёж 100 руб")
+        assert "[СУММА]" in result

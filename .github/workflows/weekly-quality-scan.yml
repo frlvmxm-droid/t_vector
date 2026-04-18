@@ -1,0 +1,40 @@
+name: weekly-quality-scan
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch: {}
+
+jobs:
+  extended-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install bandit==1.7.9 pip-audit ruff==0.6.9
+
+      - name: Bandit (full report, all severities)
+        run: bandit -r . --exclude ./tests,./ci,./fixtures -q -f txt -o bandit-report.txt || true
+
+      - name: pip-audit (known CVEs in requirements)
+        run: pip-audit --requirement requirements.txt --strict || true
+
+      - name: Ruff (extended rule set preview)
+        run: |
+          ruff check --select E,F,W,I,UP,B,S,C4,RET,RUF . --exit-zero --statistics
+
+      - name: Upload bandit report
+        uses: actions/upload-artifact@v4
+        with:
+          name: bandit-report
+          path: bandit-report.txt
+          if-no-files-found: warn

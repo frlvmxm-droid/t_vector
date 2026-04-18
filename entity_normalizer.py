@@ -163,6 +163,25 @@ _ABBREV_MAP = [
 _MULTI_SPACE = re.compile(r'  +')
 
 
+# ---------------------------------------------------------------------------
+# Лимит длины входа (защита от ReDoS — Python re не имеет timeout)
+# ---------------------------------------------------------------------------
+# Банковские реплики редко длиннее 2 КБ; патологический ввод вида
+# "1 1 1 1 …" в паттерне `\b\d[\d\s]*…` приводит к backtracking.
+import os as _os
+
+
+def _max_normalize_input_len() -> int:
+    raw = _os.environ.get("MAX_NORMALIZE_INPUT_LEN")
+    if not raw:
+        return 10_000
+    try:
+        value = int(raw)
+        return value if value > 0 else 10_000
+    except ValueError:
+        return 10_000
+
+
 def _expand_abbreviations(text: str) -> str:
     """Раскрывает частые аббревиатуры перед нормализацией сущностей."""
     for pattern, expansion in _ABBREV_MAP:
@@ -171,7 +190,16 @@ def _expand_abbreviations(text: str) -> str:
 
 
 def normalize_entities(text: str) -> str:
-    """Заменяет банковские сущности токенами в одной строке текста."""
+    """Заменяет банковские сущности токенами в одной строке текста.
+
+    Длинные строки обрезаются до ``MAX_NORMALIZE_INPUT_LEN`` (по умолчанию 10 000
+    символов) — это защищает от backtracking-DoS в regex-паттернах.
+    """
+    if not text:
+        return text
+    limit = _max_normalize_input_len()
+    if len(text) > limit:
+        text = text[:limit]
     text = _expand_abbreviations(text)
     for pattern, token in _RULES:
         text = pattern.sub(token, text)

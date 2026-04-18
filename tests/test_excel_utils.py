@@ -17,6 +17,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from excel_utils import (
+    TabularFileTooLargeError,
     fmt_eta,
     fmt_speed,
     idx_of,
@@ -357,3 +358,48 @@ class TestEstimateTotalRows:
         _write_csv(p, [["A"], ["1"]])
         result = estimate_total_rows([p])
         assert isinstance(result, int)
+
+
+# ===========================================================================
+# Size limits — защита от OOM / ZIP-bomb
+# ===========================================================================
+
+class TestSizeLimits:
+    def test_csv_over_limit_raises(self, tmp_path: Path, monkeypatch):
+        p = tmp_path / "big.csv"
+        _write_csv(p, [["A"]] + [["x"]] * 10)
+        monkeypatch.setenv("MAX_CSV_BYTES", "1")  # все CSV теперь слишком велики
+        with pytest.raises(TabularFileTooLargeError):
+            with open_tabular(p) as rows:
+                list(rows)
+
+    def test_xlsx_compressed_over_limit_raises(self, tmp_path: Path, monkeypatch):
+        p = tmp_path / "big.xlsx"
+        _write_xlsx(p, [["A"]] + [[i] for i in range(100)])
+        monkeypatch.setenv("MAX_XLSX_BYTES", "1")
+        with pytest.raises(TabularFileTooLargeError):
+            with open_tabular(p) as rows:
+                list(rows)
+
+    def test_xlsx_uncompressed_over_limit_raises(self, tmp_path: Path, monkeypatch):
+        p = tmp_path / "bomb.xlsx"
+        _write_xlsx(p, [["A"], ["hello"]])
+        monkeypatch.setenv("MAX_XLSX_UNCOMPRESSED_BYTES", "1")
+        with pytest.raises(TabularFileTooLargeError):
+            with open_tabular(p) as rows:
+                list(rows)
+
+    def test_within_limits_ok(self, tmp_path: Path, monkeypatch):
+        p = tmp_path / "ok.xlsx"
+        _write_xlsx(p, [["A"], ["v"]])
+        monkeypatch.setenv("MAX_XLSX_BYTES", "10000000")
+        with open_tabular(p) as rows:
+            header = next(rows)
+        assert header == ("A",)
+
+    def test_invalid_env_falls_back_to_default(self, tmp_path: Path, monkeypatch):
+        p = tmp_path / "ok.csv"
+        _write_csv(p, [["A"], ["v"]])
+        monkeypatch.setenv("MAX_CSV_BYTES", "not-a-number")
+        with open_tabular(p) as rows:
+            list(rows)

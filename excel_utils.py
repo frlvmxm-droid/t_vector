@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import csv
+import os
 import re
 import time
 import zipfile
@@ -17,6 +18,89 @@ from openpyxl import load_workbook
 from app_logger import get_logger
 
 _log = get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Пределы размера входных файлов (защита от OOM / ZIP-bomb)
+# ---------------------------------------------------------------------------
+# Дефолт: 200 МБ. Переопределяется через env MAX_XLSX_BYTES / MAX_CSV_BYTES.
+_DEFAULT_MAX_XLSX_BYTES = 200 * 1024 * 1024
+_DEFAULT_MAX_CSV_BYTES = 500 * 1024 * 1024
+# Жёсткий потолок для распакованного содержимого XLSX (ZIP-bomb guard).
+# XLSX обычно сжимается 5–20×; 2 ГБ распакованного — уже явно подозрительно.
+_DEFAULT_MAX_XLSX_UNCOMPRESSED_BYTES = 2 * 1024 * 1024 * 1024
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+        return value if value > 0 else default
+    except ValueError:
+        _log.warning("invalid %s=%r, using default=%d", name, raw, default)
+        return default
+
+
+def max_xlsx_bytes() -> int:
+    return _env_int("MAX_XLSX_BYTES", _DEFAULT_MAX_XLSX_BYTES)
+
+
+def max_csv_bytes() -> int:
+    return _env_int("MAX_CSV_BYTES", _DEFAULT_MAX_CSV_BYTES)
+
+
+def max_xlsx_uncompressed_bytes() -> int:
+    return _env_int("MAX_XLSX_UNCOMPRESSED_BYTES", _DEFAULT_MAX_XLSX_UNCOMPRESSED_BYTES)
+
+
+class TabularFileTooLargeError(ValueError):
+    """Файл превышает допустимый размер (защита от OOM / ZIP-bomb)."""
+
+
+def _check_size_limits(path: Path) -> None:
+    """Проверяет, что файл и (для XLSX) распакованное содержимое укладываются в лимиты.
+
+    Raises:
+        TabularFileTooLargeError — если файл превышает лимит.
+    """
+    try:
+        compressed_size = path.stat().st_size
+    except OSError:
+        return
+
+    if _is_csv(path):
+        limit = max_csv_bytes()
+        if compressed_size > limit:
+            raise TabularFileTooLargeError(
+                f"CSV {path.name}: {compressed_size} байт > лимит {limit}. "
+                f"Увеличьте MAX_CSV_BYTES или разделите файл."
+            )
+        return
+
+    if _is_excel(path):
+        limit = max_xlsx_bytes()
+        if compressed_size > limit:
+            raise TabularFileTooLargeError(
+                f"XLSX {path.name}: {compressed_size} байт > лимит {limit}. "
+                f"Увеличьте MAX_XLSX_BYTES или разделите файл."
+            )
+        uncompressed_limit = max_xlsx_uncompressed_bytes()
+        total_uncompressed = 0
+        try:
+            with zipfile.ZipFile(path, "r") as zf:
+                for info in zf.infolist():
+                    total_uncompressed += info.file_size
+                    if total_uncompressed > uncompressed_limit:
+                        raise TabularFileTooLargeError(
+                            f"XLSX {path.name}: распакованный размер "
+                            f"> {uncompressed_limit} байт — возможна ZIP-bomb."
+                        )
+        except zipfile.BadZipFile as exc:
+            raise TabularFileTooLargeError(
+                f"XLSX {path.name}: не удалось открыть как ZIP — {exc}"
+            ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -49,6 +133,8 @@ def open_tabular(path: Path) -> Iterator[Iterator[Tuple]]:
             for row in rows:
                 ...
     """
+    _check_size_limits(path)
+
     if _is_csv(path):
         # Пробуем несколько кодировок, типичных для CSV из Excel
         encodings = ["utf-8-sig", "utf-8", "cp1251", "latin-1"]
@@ -156,6 +242,7 @@ def _count_xlsx_rows_exact(p: Path) -> int:
     ws.max_row опирается на метаданные файла и может включать строки с форматированием
     но без данных («призрачные строки»). Итерация по строкам возвращает только реальные.
     """
+    _check_size_limits(p)
     wb = load_workbook(p, read_only=True, data_only=True)
     try:
         ws = wb.active
@@ -192,6 +279,7 @@ def estimate_total_rows(paths: List[Path]) -> int:
                 )
             total += _exact
         else:
+            _check_size_limits(p)
             wb = load_workbook(p, read_only=True, data_only=True)
             try:
                 ws = wb.active
