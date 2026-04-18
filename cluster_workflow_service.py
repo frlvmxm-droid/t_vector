@@ -13,7 +13,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from types import MappingProxyType
 from typing import Any, Callable, Dict, List, Mapping, Optional
 
 from app_cluster_pipeline import (
@@ -27,6 +26,7 @@ from app_cluster_pipeline import (
     postprocess_clusters,
     export_cluster_outputs,
 )
+from snap_utils import freeze_snap
 
 
 @dataclass
@@ -65,9 +65,7 @@ class ClusteringWorkflow:
         -------
         ClusterRunResult with export summary and top-level statistics.
         """
-        frozen_snap: Mapping[str, Any] = (
-            snap if isinstance(snap, MappingProxyType) else MappingProxyType(dict(snap))
-        )
+        frozen_snap: Mapping[str, Any] = freeze_snap(snap)
 
         if log_cb:
             log_cb("[ClusteringWorkflow] Подготовка данных…")
@@ -117,7 +115,5 @@ class ClusteringWorkflow:
         snap: Dict[str, Any],
     ) -> PreparedInputs:
         """Run only the data-preparation stage (useful for testing)."""
-        frozen_snap: Mapping[str, Any] = (
-            snap if isinstance(snap, MappingProxyType) else MappingProxyType(dict(snap))
-        )
+        frozen_snap: Mapping[str, Any] = freeze_snap(snap)
         return prepare_inputs(files_snapshot, frozen_snap)

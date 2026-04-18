@@ -92,6 +92,7 @@ from app_cluster_pipeline import (
     postprocess_clusters,
     export_cluster_outputs,
 )
+from snap_utils import freeze_snap as _shared_freeze_snap
 from task_runner import ErrorEnvelope, OperationLifecycle, begin_long_task, prepare_long_task_ui
 from app_logger import get_logger
 from ui_theme import BG, FG, ENTRY_BG, ACCENT, MUTED, BORDER
@@ -1972,10 +1973,15 @@ class ClusterTabMixin:
 
     @staticmethod
     def _freeze_snap(snap: Mapping[str, Any]) -> Mapping[str, Any]:
-        """Return a read-only view of *snap* for handoff to pure pipeline stages."""
-        if isinstance(snap, MappingProxyType):
-            return snap
-        return MappingProxyType(dict(snap))
+        """Thin mixin alias for `snap_utils.freeze_snap`.
+
+        Kept as an instance-accessible staticmethod because existing
+        stage helpers call `self._freeze_snap(snap)`; the shared
+        implementation lives in `snap_utils` so the service layer
+        (`ClusteringWorkflow.run`) and any future batch/CLI driver
+        share one freeze boundary.
+        """
+        return _shared_freeze_snap(snap)
 
     def _cluster_prepare_data(self, files_snapshot: List[str], snap: Dict[str, Any]):
         """Stage: prepare_inputs (pipeline adapter for orchestration layer)."""
