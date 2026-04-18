@@ -1889,7 +1889,22 @@ class ClusterTabMixin:
 
     @_dc_dataclass
     class ClusterRunState:
-        """Передаёт состояние между стадиями pipeline кластеризации."""
+        """Передаёт состояние между стадиями pipeline кластеризации.
+
+        Для доступа к результатам отдельной стадии извне (тесты, диагностика,
+        future service-слой) используйте frozen-snapshots из
+        ``cluster_run_stages``:
+
+            from cluster_run_stages import (
+                snapshot_stage1, snapshot_stage2,
+                snapshot_stage3, snapshot_stage4,
+            )
+            s1 = snapshot_stage1(_crs)   # frozen Stage1InputSnapshot
+
+        Frozen-views упрощают миграцию к сервис-слою: фиксируют чёткую
+        границу между стадиями без переписывания in-place мутаций в
+        существующем 2000-строчном worker-потоке.
+        """
         # Инициализируется в worker()
         in_paths: list = _dc_field(default_factory=list)
         total_rows: int = 0
