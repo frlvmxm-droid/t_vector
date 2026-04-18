@@ -1,0 +1,13 @@
+{
+  "name": "three-blobs-k3",
+  "seed": 20260418,
+  "n_points": 120,
+  "n_features": 16,
+  "n_clusters": 3,
+  "blob_std": 1.0,
+  "centers_scale": 6.0,
+  "kmeans_n_init": 10,
+  "kmeans_max_iter": 300,
+  "expected_cluster_sizes_sorted": [40, 40, 40],
+  "expected_purity_min": 0.98
+}
