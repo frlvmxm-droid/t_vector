@@ -1,0 +1,10 @@
+{
+  "name": "train_v1_valid",
+  "bundle": {
+    "artifact_type": "train_model_bundle",
+    "schema_version": 1,
+    "pipeline": {"__placeholder__": true}
+  },
+  "allow_missing_schema": false,
+  "expect_ok": true
+}

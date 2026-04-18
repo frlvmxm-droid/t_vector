@@ -1,0 +1,11 @@
+{
+  "name": "train_v2_future",
+  "bundle": {
+    "artifact_type": "train_model_bundle",
+    "schema_version": 2,
+    "pipeline": {"__placeholder__": true}
+  },
+  "allow_missing_schema": false,
+  "expect_ok": false,
+  "error_match": "SCHEMA_UNSUPPORTED"
+}

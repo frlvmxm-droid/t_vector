@@ -1,0 +1,5 @@
+{
+  "prepare_inputs_sec_median": 0.35,
+  "build_t5_source_text_sec_median": 0.85,
+  "peak_memory_bytes_max": 4500000
+}

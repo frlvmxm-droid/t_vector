@@ -1,0 +1,9 @@
+{
+  "name": "train_v0_legacy",
+  "bundle": {
+    "artifact_type": "train_model_bundle",
+    "pipeline": {"__placeholder__": true}
+  },
+  "allow_missing_schema": true,
+  "expect_ok": true
+}
