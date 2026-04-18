@@ -175,7 +175,7 @@ class TestParentCatchesChild:
             AppBaseError, ModelLoadError, SchemaError,
             FeatureBuildError, PredictPipelineError, UnexpectedError,
         ):
-            with pytest.raises(Exception):
+            with pytest.raises(Exception):  # noqa: B017 — intentional: verify all subclasses inherit from Exception
                 raise exc_class("caught as Exception")
 
     def test_except_block_catches_child_as_parent(self):

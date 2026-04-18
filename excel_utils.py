@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Вспомогательные функции для работы с табличными файлами (XLSX, XLS, CSV)
 и отображения прогресса.
@@ -10,11 +9,12 @@ import os
 import re
 import time
 import zipfile
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional, Tuple
 
 from openpyxl import load_workbook
+
 from app_logger import get_logger
 
 _log = get_logger(__name__)
@@ -120,7 +120,7 @@ def _is_excel(path: Path) -> bool:
 # ---------------------------------------------------------------------------
 
 @contextmanager
-def open_tabular(path: Path) -> Iterator[Iterator[Tuple]]:
+def open_tabular(path: Path) -> Iterator[Iterator[tuple]]:
     """Контекстный менеджер — отдаёт итератор строк для CSV или XLSX/XLS.
 
     Каждая строка — кортеж значений (str | None).
@@ -186,7 +186,7 @@ def open_tabular(path: Path) -> Iterator[Iterator[Tuple]]:
 # Чтение заголовков
 # ---------------------------------------------------------------------------
 
-def read_headers(path: Path) -> List[str]:
+def read_headers(path: Path) -> list[str]:
     """Читает первую строку файла как список заголовков."""
     with open_tabular(path) as rows:
         header = next(rows)
@@ -197,7 +197,7 @@ def read_headers(path: Path) -> List[str]:
 # Индекс колонки по имени
 # ---------------------------------------------------------------------------
 
-def idx_of(headers: List[str], col_name: str) -> Optional[int]:
+def idx_of(headers: list[str], col_name: str) -> int | None:
     """Возвращает индекс колонки по имени или None если не найдена."""
     if not col_name:
         return None
@@ -259,7 +259,7 @@ def _count_xlsx_rows_exact(p: Path) -> int:
         wb.close()
 
 
-def estimate_total_rows(paths: List[Path]) -> int:
+def estimate_total_rows(paths: list[Path]) -> int:
     """Оценивает суммарное количество строк данных (без заголовка) по всем файлам.
 
     Для XLSX ≤ 5 МБ использует точный подсчёт итерацией (избегает «призрачных строк»
@@ -321,7 +321,7 @@ def fmt_speed(start_ts: float, done: int) -> str:
 # Post-save Excel formatting (column widths) via ZIP/XML patching
 # ---------------------------------------------------------------------------
 
-def patch_xlsx_col_widths(path: Path, patches: List[Tuple[int, List[float]]]) -> None:
+def patch_xlsx_col_widths(path: Path, patches: list[tuple[int, list[float]]]) -> None:
     """Быстро добавляет ширины колонок в сохранённый xlsx-файл.
 
     Работает напрямую с ZIP-архивом без загрузки данных ячеек в openpyxl.
@@ -339,7 +339,7 @@ def patch_xlsx_col_widths(path: Path, patches: List[Tuple[int, List[float]]]) ->
         )
 
         # Строим карту: имя файла → новые ширины
-        patch_map: Dict[str, List[float]] = {}
+        patch_map: dict[str, list[float]] = {}
         for sheet_idx, widths in patches:
             if sheet_idx < len(sheet_files):
                 patch_map[sheet_files[sheet_idx]] = widths
@@ -348,7 +348,7 @@ def patch_xlsx_col_widths(path: Path, patches: List[Tuple[int, List[float]]]) ->
             return
 
         # Читаем все данные пока файл ещё открыт
-        file_contents: Dict[str, bytes] = {name: zin.read(name) for name in all_names}
+        file_contents: dict[str, bytes] = {name: zin.read(name) for name in all_names}
 
     # zin закрыт — теперь можно безопасно заменить файл (особенно на Windows)
     tmp = path.with_suffix(".tmp.xlsx")

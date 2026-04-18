@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 entity_normalizer — нормализация банковских сущностей в тексте.
 
@@ -17,14 +16,12 @@ entity_normalizer — нормализация банковских сущнос
 from __future__ import annotations
 
 import re
-from typing import List, Tuple
-
 
 # ---------------------------------------------------------------------------
 # Паттерны — применяются ПО ПОРЯДКУ (более специфичные — первыми)
 # ---------------------------------------------------------------------------
 
-_RULES: List[Tuple[re.Pattern, str]] = [
+_RULES: list[tuple[re.Pattern, str]] = [
     # Карты: 16 цифр (с пробелами/тире/звёздочками)
     (re.compile(
         r'\b\d{4}[\s\-*]{0,3}\d{4}[\s\-*]{0,3}'
@@ -168,7 +165,7 @@ _MULTI_SPACE = re.compile(r'  +')
 # ---------------------------------------------------------------------------
 # Банковские реплики редко длиннее 2 КБ; патологический ввод вида
 # "1 1 1 1 …" в паттерне `\b\d[\d\s]*…` приводит к backtracking.
-import os as _os
+import os as _os  # noqa: E402 — deliberate late import for env-var lookup
 
 
 def _max_normalize_input_len() -> int:

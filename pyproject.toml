@@ -9,11 +9,17 @@ line-length = 120
 target-version = "py311"
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "UP"]
+select = ["E", "F", "W", "I", "UP", "B"]
 ignore = [
     "E501",   # длинные строки в UI и tooltip-текстах — допустимы
     "E741",   # ambiguous variable names (l, O, I) — встречаются в ML-коде
     "UP007",  # Optional[X] vs X | None — оставляем совместимость с 3.9
+    # B-rules (bugbear): widespread-but-intentional patterns in this codebase
+    "B008",   # function call in default argument (common Python idiom for factories)
+    "B904",   # raise-without-from in except — too widespread, tracked separately
+    "B905",   # zip-without-strict — sklearn / numpy idioms don't benefit
+    "B007",   # unused loop variable (OK for readability with explicit names)
+    "B023",   # function uses loop variable (intentional in ML closures)
 ]
 
 [tool.mypy]
@@ -21,6 +27,22 @@ python_version = "3.11"
 ignore_missing_imports = true
 strict = false
 warn_unused_ignores = true
+
+# ---------------------------------------------------------------------------
+# Bandit — security scanner
+# ---------------------------------------------------------------------------
+# `bandit -c pyproject.toml -r . --exclude ./tests,./ci,./fixtures -ll`
+[tool.bandit]
+exclude_dirs = ["tests", "ci", "fixtures", "build", "dist", ".git"]
+skips = [
+    "B101",  # assert in tests is fine
+    "B110",  # try-except-pass — best-effort resource cleanup (annotated sites)
+    "B404",  # subprocess import — used in bootstrap_run.py legitimately
+    "B603",  # subprocess without shell=True — we already avoid shell=True
+    "B607",  # subprocess partial path — explicit python interpreter is intended
+    "B311",  # random for non-security contexts (sampling, jitter) — documented
+    "B301", "B403",  # pickle via joblib — loads gated by SHA-256 TrustStore
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

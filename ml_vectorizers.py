@@ -112,8 +112,8 @@ class _BuiltinsPatch:
                     setattr(_b, name, getattr(_src, name))
                     self._injected.append(name)
                     return True
-        except (ImportError, AttributeError):
-            pass  # torch не установлен или API изменился — идём к SimpleNamespace fallback
+        except AttributeError:
+            pass  # API torch изменился — идём к SimpleNamespace fallback (ImportError уже обработан выше)
         # Крайний случай: заглушка SimpleNamespace.
         # ПРЕДУПРЕЖДЕНИЕ: если transformers действительно использует это имя
         # не как аннотацию типа, а как реальный объект — будет AttributeError.

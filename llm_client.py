@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Сетевой клиент LLM-провайдеров с retry/circuit-breaker/cache."""
 from __future__ import annotations
 
@@ -12,10 +11,10 @@ import time
 import urllib.error as _urlerr
 import urllib.request as _urlreq
 from collections import OrderedDict
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from ipaddress import ip_address
 from json import JSONDecodeError
-from typing import Any, Dict, Optional
+from typing import Any
 from urllib.parse import urlparse
 
 from app_logger import get_logger
@@ -35,7 +34,7 @@ _CACHE_TTL_SEC = 600
 _CACHE_MAX_ENTRIES = max(32, int(os.getenv("LLM_CACHE_MAX_ENTRIES", "256")))
 _CACHE_CLEANUP_EVERY = max(1, int(os.getenv("LLM_CACHE_CLEANUP_EVERY", "32")))
 
-_PROVIDER_HOST_ALLOWLIST: Dict[str, set[str]] = {
+_PROVIDER_HOST_ALLOWLIST: dict[str, set[str]] = {
     "openai": {"api.openai.com"},
     "anthropic": {"api.anthropic.com"},
     "qwen": {"dashscope.aliyuncs.com"},
@@ -92,9 +91,9 @@ def is_safe_url(
 class LLMClient:
     """Сетевой клиент для LLM-провайдеров, используемых в кластеризации."""
 
-    _circuit_state: Dict[str, Dict[str, Any]] = {}
-    _response_cache: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
-    _cache_stats: Dict[str, int] = {"hit": 0, "miss": 0, "eviction": 0}
+    _circuit_state: dict[str, dict[str, Any]] = {}
+    _response_cache: OrderedDict[str, dict[str, Any]] = OrderedDict()
+    _cache_stats: dict[str, int] = {"hit": 0, "miss": 0, "eviction": 0}
     _cache_cleanup_ctr: int = 0
     _state_lock = threading.RLock()
     _stats_lock = threading.RLock()
@@ -131,7 +130,7 @@ class LLMClient:
             if not item:
                 cls._stat_inc("miss")
                 return None
-            if datetime.now(timezone.utc) > item["expires_at"]:
+            if datetime.now(UTC) > item["expires_at"]:
                 cls._response_cache.pop(key, None)
                 cls._stat_inc("miss")
                 return None
@@ -142,7 +141,7 @@ class LLMClient:
     @classmethod
     def _cache_put(cls, key: str, value: str, ttl_sec: int = _CACHE_TTL_SEC) -> None:
         with cls._state_lock:
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             cls._cache_cleanup_ctr += 1
             if cls._cache_cleanup_ctr % _CACHE_CLEANUP_EVERY == 0:
                 expired_keys = [k for k, v in cls._response_cache.items() if now > v.get("expires_at", now)]
@@ -158,7 +157,7 @@ class LLMClient:
                 cls._stat_inc("eviction")
 
     @classmethod
-    def cache_stats(cls) -> Dict[str, int]:
+    def cache_stats(cls) -> dict[str, int]:
         with cls._state_lock:
             cache_size = len(cls._response_cache)
         with cls._stats_lock:
@@ -187,7 +186,7 @@ class LLMClient:
         with cls._state_lock:
             state = cls._circuit_state.get(p) or {}
             opened_until = state.get("opened_until")
-            return bool(opened_until and datetime.now(timezone.utc) < opened_until)
+            return bool(opened_until and datetime.now(UTC) < opened_until)
 
     @classmethod
     def _mark_success(cls, provider: str) -> None:
@@ -202,11 +201,11 @@ class LLMClient:
             state = cls._circuit_state.get(p) or {"failures": 0, "opened_until": None}
             state["failures"] = int(state.get("failures", 0)) + 1
             if state["failures"] >= _CIRCUIT_BREAKER_THRESHOLD:
-                state["opened_until"] = datetime.now(timezone.utc) + timedelta(seconds=_CIRCUIT_BREAKER_RESET_SEC)
+                state["opened_until"] = datetime.now(UTC) + timedelta(seconds=_CIRCUIT_BREAKER_RESET_SEC)
             cls._circuit_state[p] = state
 
     @staticmethod
-    def _parse_retry_after(headers: Any) -> Optional[float]:
+    def _parse_retry_after(headers: Any) -> float | None:
         """Parse RFC 7231 Retry-After header: delta-seconds or HTTP-date.
 
         Returns the wait in seconds, or None if absent/unparseable.
@@ -238,8 +237,8 @@ class LLMClient:
             if dt is None:
                 return None
             if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            delta = (dt - datetime.now(timezone.utc)).total_seconds()
+                dt = dt.replace(tzinfo=UTC)
+            delta = (dt - datetime.now(UTC)).total_seconds()
             return max(0.0, delta)
         except (TypeError, ValueError):
             return None
@@ -272,7 +271,7 @@ class LLMClient:
         system_prompt: str,
         user_prompt: str,
         max_tokens: int,
-    ) -> tuple[str, Dict[str, str], Dict[str, Any]]:
+    ) -> tuple[str, dict[str, str], dict[str, Any]]:
         """Строит URL, заголовки и payload для конкретного провайдера.
 
         Returns:
@@ -280,12 +279,12 @@ class LLMClient:
         """
         if p == "anthropic":
             url = "https://api.anthropic.com/v1/messages"
-            headers: Dict[str, str] = {
+            headers: dict[str, str] = {
                 "x-api-key": resolved_api_key,
                 "anthropic-version": "2023-06-01",
                 "content-type": "application/json",
             }
-            payload: Dict[str, Any] = {
+            payload: dict[str, Any] = {
                 "model": model,
                 "max_tokens": max_tokens,
                 "system": system_prompt,
@@ -445,7 +444,7 @@ class LLMClient:
                 raise FeatureBuildError(
                     f"[error_code=LLM_NETWORK_ERROR] stage=llm.request hint=Проверьте сеть, DNS/прокси и URL провайдера. | {type(_reason).__name__}: {_reason}"
                 )
-            except (TimeoutError, socket.timeout) as e:
+            except TimeoutError as e:
                 if attempt_idx < attempts - 1:
                     _sleep = backoff_base_sec * (2 ** attempt_idx) + random.uniform(0.0, backoff_jitter_sec)
                     _log.warning(

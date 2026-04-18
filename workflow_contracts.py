@@ -1,10 +1,9 @@
-# -*- coding: utf-8 -*-
 """Контракты конфигурации workflow-слоя (валидация снапшотов UI)."""
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Dict
 import math
+from dataclasses import dataclass
+from typing import Any
 
 try:
     from pydantic import BaseModel, ValidationError
@@ -13,13 +12,13 @@ except (ImportError, ModuleNotFoundError):  # optional dependency
     ValidationError = Exception
 
 
-def _require(data: Dict[str, Any], key: str) -> Any:
+def _require(data: dict[str, Any], key: str) -> Any:
     if key not in data:
         raise ValueError(f"Отсутствует обязательный параметр: {key}")
     return data[key]
 
 
-def _as_str(data: Dict[str, Any], key: str, *, min_len: int = 1) -> str:
+def _as_str(data: dict[str, Any], key: str, *, min_len: int = 1) -> str:
     val = _require(data, key)
     if not isinstance(val, str):
         raise ValueError(f"Параметр {key} должен быть строкой.")
@@ -29,7 +28,7 @@ def _as_str(data: Dict[str, Any], key: str, *, min_len: int = 1) -> str:
     return out
 
 
-def _as_float(data: Dict[str, Any], key: str, *, min_value: float | None = None, max_value: float | None = None) -> float:
+def _as_float(data: dict[str, Any], key: str, *, min_value: float | None = None, max_value: float | None = None) -> float:
     val = _require(data, key)
     try:
         out = float(val)
@@ -44,7 +43,7 @@ def _as_float(data: Dict[str, Any], key: str, *, min_value: float | None = None,
     return out
 
 
-def _as_int(data: Dict[str, Any], key: str, *, min_value: int | None = None, max_value: int | None = None) -> int:
+def _as_int(data: dict[str, Any], key: str, *, min_value: int | None = None, max_value: int | None = None) -> int:
     val = _require(data, key)
     try:
         out = int(val)
@@ -57,7 +56,7 @@ def _as_int(data: Dict[str, Any], key: str, *, min_value: int | None = None, max
     return out
 
 
-def _manual_validate_payload(schema_name: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+def _manual_validate_payload(schema_name: str, payload: dict[str, Any]) -> dict[str, Any]:
     """Строгая ручная валидация при отсутствии pydantic."""
     out = dict(payload)
     if schema_name == "train":
@@ -92,7 +91,7 @@ def _manual_validate_payload(schema_name: str, payload: Dict[str, Any]) -> Dict[
     return out
 
 
-def _validate_payload(schema, payload: Dict[str, Any], *, schema_name: str) -> Dict[str, Any]:
+def _validate_payload(schema, payload: dict[str, Any], *, schema_name: str) -> dict[str, Any]:
     """Централизованная валидация payload: Pydantic (если доступен) или ручная."""
     if BaseModel is not None and schema is not None:
         try:
@@ -149,7 +148,7 @@ class TrainWorkflowConfig:
     diagnostic_mode: bool
 
     @classmethod
-    def from_snapshot(cls, snap: Dict[str, Any]) -> "TrainWorkflowConfig":
+    def from_snapshot(cls, snap: dict[str, Any]) -> TrainWorkflowConfig:
         validated = _validate_payload(_TrainSchema, snap, schema_name="train")
         return cls(
             train_mode=str(_require(validated, "train_mode")),
@@ -171,7 +170,7 @@ class ApplyWorkflowConfig:
     diagnostic_mode: bool
 
     @classmethod
-    def from_snapshot(cls, snap: Dict[str, Any]) -> "ApplyWorkflowConfig":
+    def from_snapshot(cls, snap: dict[str, Any]) -> ApplyWorkflowConfig:
         validated = _validate_payload(_ApplySchema, snap, schema_name="apply")
         return cls(
             model_file=str(_require(validated, "model_file")),
@@ -195,7 +194,7 @@ class ClusterWorkflowConfig:
     diagnostic_mode: bool
 
     @classmethod
-    def from_snapshot(cls, snap: Dict[str, Any]) -> "ClusterWorkflowConfig":
+    def from_snapshot(cls, snap: dict[str, Any]) -> ClusterWorkflowConfig:
         validated = _validate_payload(_ClusterSchema, snap, schema_name="cluster")
         cluster_algo = str(_require(validated, "cluster_algo"))
         cluster_vec_mode = str(_require(validated, "cluster_vec_mode"))

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 ml_mlm_pretrain — дообучение энкодера через Masked Language Modeling (MLM)
 на доменном корпусе банковских диалогов перед основной классификацией.
@@ -25,9 +24,8 @@ ml_mlm_pretrain — дообучение энкодера через Masked Lang
 """
 from __future__ import annotations
 
-import os
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, List, Optional, Tuple
 
 from app_logger import get_logger
 
@@ -47,7 +45,7 @@ def is_available() -> bool:
 
 
 def pretrain_mlm(
-    texts: List[str],
+    texts: list[str],
     model_name: str = "ai-forever/ru-en-RoSBERTa",
     output_dir: str = "mlm_pretrained",
     *,
@@ -62,8 +60,8 @@ def pretrain_mlm(
     logging_steps: int = 50,
     save_steps: int = 500,
     seed: int = 42,
-    log_cb: Optional[Callable[[str], None]] = None,
-    progress_cb: Optional[Callable[[float, str], None]] = None,
+    log_cb: Callable[[str], None] | None = None,
+    progress_cb: Callable[[float, str], None] | None = None,
 ) -> str:
     """Дообучает encoder-модель через MLM на доменном корпусе.
 
@@ -100,14 +98,14 @@ def pretrain_mlm(
     _log_msg(f"[MLM pretrain] Загрузка модели {model_name} …")
     _prog(5.0, f"MLM: загрузка {model_name}…")
 
-    from transformers import (
-        AutoTokenizer,
-        AutoModelForMaskedLM,
-        DataCollatorForLanguageModeling,
-        TrainingArguments,
-        Trainer,
-    )
     from datasets import Dataset
+    from transformers import (
+        AutoModelForMaskedLM,
+        AutoTokenizer,
+        DataCollatorForLanguageModeling,
+        Trainer,
+        TrainingArguments,
+    )
 
     _n = len(texts)
     _log_msg(f"[MLM pretrain] Корпус: {_n} текстов | модель: {model_name}")
@@ -185,7 +183,7 @@ def estimate_mlm_time_minutes(
     n_texts: int,
     epochs: int = 3,
     has_gpu: bool = True,
-) -> Tuple[float, float]:
+) -> tuple[float, float]:
     """Оценочное время дообучения (мин). Возвращает (мин_оценка, макс_оценка)."""
     # Эмпирика: ~0.1 с/текст/эпоху на GPU, ~1.5 с/текст/эпоху на CPU
     secs_per_text_epoch = 0.1 if has_gpu else 1.5

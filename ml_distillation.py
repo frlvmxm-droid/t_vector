@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 ml_distillation — дистилляция знаний (teacher → student).
 
@@ -41,7 +40,8 @@ ml_distillation — дистилляция знаний (teacher → student).
 """
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from collections.abc import Callable, Sequence
+from typing import Any
 
 import numpy as np
 from sklearn.pipeline import Pipeline
@@ -61,7 +61,7 @@ def distill_soft_labels(
     alpha: float = 0.5,
     test_size: float = 0.15,
     random_state: int = 42,
-    log_cb: Optional[Callable[[str], None]] = None,
+    log_cb: Callable[[str], None] | None = None,
 ) -> Pipeline:
     """Обучает студента на мягких метках учителя (soft label distillation).
 
@@ -102,7 +102,6 @@ def distill_soft_labels(
     _log_msg(f"[Дистилляция] Учитель → предсказываю вероятности ({len(X)} примеров)…")
 
     teacher_classes = list(teacher.classes_) if hasattr(teacher, "classes_") else classes
-    t_cls_to_idx = {c: i for i, c in enumerate(teacher_classes)}
 
     teacher_proba_raw = teacher.predict_proba(X)
 
@@ -162,14 +161,14 @@ def evaluate_distillation(
     student: Any,
     X_test: Sequence[str],
     y_test: Sequence[str],
-    log_cb: Optional[Callable[[str], None]] = None,
-) -> Dict[str, Any]:
+    log_cb: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
     """Сравнивает метрики учителя и студента на тестовой выборке.
 
     Возвращает словарь:
       teacher_f1, student_f1, f1_drop, teacher_acc, student_acc, acc_drop
     """
-    from sklearn.metrics import f1_score, accuracy_score
+    from sklearn.metrics import accuracy_score, f1_score
 
     def _log_msg(msg: str) -> None:
         _log.info(msg)

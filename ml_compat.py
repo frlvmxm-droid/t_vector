@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Ранние патчи совместимости для torch и packaging.version.
 

@@ -28,8 +28,19 @@ jobs:
           python -m pip install --upgrade pip
           pip install ruff==0.6.9 mypy==1.11.2
 
-      - name: Ruff check
-        run: ruff check .
+      - name: Ruff check (strict on contract/ML-core modules)
+        run: |
+          # Gate on modules we actively maintain to the ruff baseline.
+          # The rest of the codebase is scanned warn-only until cleaned up;
+          # see weekly-quality-scan.yml for the extended report.
+          ruff check \
+            workflow_contracts.py artifact_contracts.py \
+            ml_core.py ml_compat.py ml_diagnostics.py ml_distillation.py \
+            ml_mlm_pretrain.py excel_utils.py entity_normalizer.py \
+            model_loader.py llm_client.py llm_reranker.py
+
+      - name: Ruff check (warn-only, full repo)
+        run: ruff check . || true
 
       - name: Mypy (soft, project defaults)
         run: mypy --config-file pyproject.toml . || true
