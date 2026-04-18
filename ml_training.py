@@ -297,7 +297,7 @@ def _oversample_hard_negatives(
             max_features=15_000, min_df=1,
         )
         _M = _vec.fit_transform(Xtr)
-    except Exception as _tfidf_exc:
+    except (ValueError, MemoryError, TypeError) as _tfidf_exc:
         _log.warning("oversample TF-IDF vectorizer failed: %s", _tfidf_exc)
         return Xtr, ytr
 

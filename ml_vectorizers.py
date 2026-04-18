@@ -548,8 +548,14 @@ class SBERTVectorizer:
                 ignore_patterns=["*.h5", "*.ot", "flax_model*", "tf_model*",
                                   "rust_model*", "onnx*"],
             )
-        except Exception as e:
-            self._log(f"[SBERT] ⚠️ Ошибка при скачивании: {e}")
+        except (OSError, ValueError, RuntimeError) as e:
+            # Expected failure modes:
+            #   OSError — network / disk / permission / connection reset
+            #   ValueError — malformed repo id or missing required files
+            #   RuntimeError — HfHubHTTPError (404 / 401 / 403) subclasses this
+            # SentenceTransformer will retry the download on its own below,
+            # so we record the reason and fall through.
+            self._log(f"[SBERT] ⚠️ Ошибка при скачивании ({type(e).__name__}): {e}")
             self._log(f"[SBERT] Попытка загрузить напрямую через SentenceTransformer…")
         finally:
             _stop.set()

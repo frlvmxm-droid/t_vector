@@ -150,12 +150,14 @@ class SetFitClassifier:
 
         # Освобождаем память от предыдущей модели (если была) перед загрузкой новой.
         # Без этого повторный вызов fit() накапливает модели на GPU → OOM.
+        # Для resource-cleanup блоков (torch.cuda.*, .to("cpu")) используем
+        # широкий except: ошибка на этом этапе НЕ должна прерывать fit().
         if self._model is not None:
             try:
                 # Явно переносим на CPU перед удалением, чтобы освободить VRAM немедленно
                 import torch as _torch_free
                 self._model.to("cpu")
-            except Exception:
+            except Exception:  # noqa: BLE001 — best-effort VRAM release
                 pass
             import gc as _gc
             del self._model
@@ -166,7 +168,7 @@ class SetFitClassifier:
                 if _torch_free2.cuda.is_available():
                     _torch_free2.cuda.synchronize()
                     _torch_free2.cuda.empty_cache()
-            except Exception:
+            except Exception:  # noqa: BLE001 — best-effort VRAM release
                 pass
 
         self.classes_ = sorted(set(y))
