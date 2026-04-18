@@ -14,6 +14,8 @@ Governance:
 """
 from __future__ import annotations
 
+from typing import Any
+
 from app_logger import get_logger
 
 _log = get_logger(__name__)
@@ -39,23 +41,24 @@ def apply_early_compat_patches() -> None:
         return
     try:
         import sys as _sys_early
-        _torch_early = _sys_early.modules.get("torch")
-        if _torch_early is None:
+        _torch_module: Any = _sys_early.modules.get("torch")
+        if _torch_module is None:
             try:
-                import torch as _torch_early
+                import torch as _torch_imported
+                _torch_module = _torch_imported
             except Exception as _e_torch_early:
                 _log.warning(
                     "[ml_compat] ранний патч torch.__version__: torch не импортируется (%s). "
                     "Это нормально, если torch не установлен.",
                     _e_torch_early,
                 )
-                _torch_early = None
-        if _torch_early is not None and getattr(_torch_early, "__version__", None) is None:
+                _torch_module = None
+        if _torch_module is not None and getattr(_torch_module, "__version__", None) is None:
             try:
                 import importlib.metadata as _imeta_early
-                _torch_early.__version__ = _imeta_early.version("torch")
+                _torch_module.__version__ = _imeta_early.version("torch")
             except Exception:
-                _torch_early.__version__ = "2.4.0"
+                _torch_module.__version__ = "2.4.0"
         _PATCH_APPLIED = True
     except Exception as _e_early_patch:
         _log.warning(

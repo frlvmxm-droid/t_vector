@@ -28,6 +28,19 @@ ignore_missing_imports = true
 strict = false
 warn_unused_ignores = true
 
+# Постепенное включение strict-mypy по модулям.
+# Начинаем с «ядра контрактов» + изолированных ML-утилит, не тянущих за собой
+# тяжёлые импорты. Расширяем постепенно (см. CLAUDE.md).
+[[tool.mypy.overrides]]
+module = [
+    "workflow_contracts",
+    "artifact_contracts",
+    "ml_compat",
+    "ml_core",
+]
+strict = true
+follow_imports = "silent"
+
 # ---------------------------------------------------------------------------
 # Bandit — security scanner
 # ---------------------------------------------------------------------------

@@ -3,13 +3,20 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
-try:
-    from pydantic import BaseModel, ValidationError
-except (ImportError, ModuleNotFoundError):  # optional dependency
-    BaseModel = None  # type: ignore[assignment]
-    ValidationError = Exception
+if TYPE_CHECKING:
+    from pydantic import BaseModel as _PydanticBaseModel
+
+    ValidationError: type[Exception] = Exception
+    _BaseModel: type[_PydanticBaseModel] | None = None
+else:
+    try:
+        from pydantic import BaseModel as _BaseModel
+        from pydantic import ValidationError
+    except (ImportError, ModuleNotFoundError):  # optional dependency
+        _BaseModel = None
+        ValidationError = Exception
 
 
 def _require(data: dict[str, Any], key: str) -> Any:
@@ -91,19 +98,28 @@ def _manual_validate_payload(schema_name: str, payload: dict[str, Any]) -> dict[
     return out
 
 
-def _validate_payload(schema, payload: dict[str, Any], *, schema_name: str) -> dict[str, Any]:
+def _validate_payload(
+    schema: Any,
+    payload: dict[str, Any],
+    *,
+    schema_name: str,
+) -> dict[str, Any]:
     """Централизованная валидация payload: Pydantic (если доступен) или ручная."""
-    if BaseModel is not None and schema is not None:
+    if _BaseModel is not None and schema is not None:
         try:
             obj = schema(**payload)
-            return obj.model_dump()
+            return cast(dict[str, Any], obj.model_dump())
         except ValidationError as ex:
             raise ValueError(str(ex)) from ex
     return _manual_validate_payload(schema_name, payload)
 
 
-if BaseModel is not None:
-    class _TrainSchema(BaseModel):
+_TrainSchema: Any
+_ApplySchema: Any
+_ClusterSchema: Any
+
+if _BaseModel is not None:
+    class _TrainSchema(_BaseModel):  # type: ignore[no-redef,misc,valid-type]
         train_mode: str
         C: float
         max_iter: int
@@ -113,14 +129,14 @@ if BaseModel is not None:
         oversample_strategy: str = "augment_light"
         diagnostic_mode: bool = False
 
-    class _ApplySchema(BaseModel):
+    class _ApplySchema(_BaseModel):  # type: ignore[no-redef,misc,valid-type]
         model_file: str
         apply_file: str
         pred_col: str
         use_ensemble: bool = False
         diagnostic_mode: bool = False
 
-    class _ClusterSchema(BaseModel):
+    class _ClusterSchema(_BaseModel):  # type: ignore[no-redef,misc,valid-type]
         cluster_algo: str
         cluster_vec_mode: str
         k_clusters: int
