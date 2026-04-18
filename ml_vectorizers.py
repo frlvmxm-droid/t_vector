@@ -816,7 +816,19 @@ class PerFieldSBERTVectorizer(BaseEstimator, TransformerMixin):
 
             field_matrices.append(field_embs)
 
-        return np.hstack(field_matrices)
+        stacked = np.hstack(field_matrices)
+
+        # Финальная L2-норма после применения per-field весов. Без этого
+        # шага поле с весом w=3 раздувает норму конкатенированного вектора в
+        # √(w²) раз относительно полей с w=1 → косинусное сравнение между
+        # документами с разной комбинацией непустых секций теряет смысл
+        # (LinearSVC и KMeans перестают быть инвариантны к магнитуде).
+        if self.normalize:
+            stacked_norms = np.linalg.norm(stacked, axis=1, keepdims=True)
+            stacked_norms = np.where(stacked_norms > 0, stacked_norms, 1.0)
+            stacked = stacked / stacked_norms
+
+        return stacked
 
     def fit_transform(self, X: List[str], y: Any = None) -> np.ndarray:
         return self.fit(X, y).transform(X)

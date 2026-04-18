@@ -391,3 +391,132 @@ class TestInputLengthLimit:
         monkeypatch.setenv("MAX_NORMALIZE_INPUT_LEN", "not-an-int")
         result = normalize_entities("Платёж 100 руб")
         assert "[СУММА]" in result
+
+
+# ---------------------------------------------------------------------------
+# Волна качества анализа текстов (Wave 1): расширенное покрытие банков,
+# продуктов, падежей и сленговых форм; пост-нормализационный collapse.
+# ---------------------------------------------------------------------------
+
+
+class TestNewBanksCoverage:
+    @pytest.mark.parametrize("text", [
+        "обратился в Ак Барс банк",
+        "Ак-Барс Банк одобрил кредит",
+        "перевод через АкБарсБанк",
+        "акбарс одобрил",
+    ])
+    def test_ak_bars_variants(self, text):
+        assert "[БАНК]" in normalize_entities(text)
+
+    @pytest.mark.parametrize("text", [
+        "Восточный экспресс банк",
+        "во Восточном банке взял кредит",
+    ])
+    def test_vostochny(self, text):
+        assert "[БАНК]" in normalize_entities(text)
+
+    @pytest.mark.parametrize("text", [
+        "Инвестторгбанк — счёт заморожен",
+        "инвестбанк закрыл офис",
+    ])
+    def test_investbank(self, text):
+        assert "[БАНК]" in normalize_entities(text)
+
+    @pytest.mark.parametrize("text", [
+        "УБРиР прислал сообщение",
+    ])
+    def test_ubrir(self, text):
+        assert "[БАНК]" in normalize_entities(text)
+
+    @pytest.mark.parametrize("text", [
+        "МТС-банк не работает",
+        "МТС банк списал деньги",
+    ])
+    def test_mts_bank(self, text):
+        assert "[БАНК]" in normalize_entities(text)
+
+    @pytest.mark.parametrize("text", [
+        "банк Русский стандарт",
+        "Русский Стандарт кредит",
+    ])
+    def test_russian_standard(self, text):
+        assert "[БАНК]" in normalize_entities(text)
+
+
+class TestSlangBankNames:
+    @pytest.mark.parametrize("text", [
+        "сбор списал 100 руб",           # сленг: «сбор» вместо «Сбер»
+        "тинёк прислал смс",             # сленг: «тинёк» вместо «Тинькофф»
+        "тиник не отвечает",             # сленг: «тиник»
+        "T-банк теперь вместо Тинькофф",  # ребрендинг
+        "T-Bank — новый бренд",
+    ])
+    def test_slang_and_rebrand_forms(self, text):
+        assert "[БАНК]" in normalize_entities(text)
+
+
+class TestNewProductsCoverage:
+    @pytest.mark.parametrize("text,token", [
+        ("оформил ОСАГО на год", "[ПРОДУКТ]"),
+        ("полис каско стоит дорого", "[ПРОДУКТ]"),
+        ("налоговый вычет за лечение", "[ПРОДУКТ]"),
+        ("кредитный лимит увеличили", "[ПРОДУКТ]"),
+        ("льготный период закончился", "[ПРОДУКТ]"),
+        ("грейс период 55 дней", "[ПРОДУКТ]"),
+        ("кэшбэк 5%", "[ПРОДУКТ]"),
+        ("получил cashback", "[ПРОДУКТ]"),
+        ("баллы Спасибо накопил", "[ПРОДУКТ]"),
+        ("виртуальная карта для оплаты", "[ПРОДУКТ]"),
+        ("зарплатная карта от работодателя", "[ПРОДУКТ]"),
+        ("детская карта для ребёнка", "[ПРОДУКТ]"),
+        ("дополнительную карту заказал", "[ПРОДУКТ]"),
+    ])
+    def test_new_products(self, text, token):
+        assert token in normalize_entities(text)
+
+
+class TestBankCasesAndForms:
+    @pytest.mark.parametrize("text", [
+        "в сбере снял наличные",
+        "от тинькоффа пришло смс",
+        "из альфа-банка позвонили",
+        "в газпромбанке оформил вклад",
+        "в райффайзене есть депозит",
+        "через сбербанк перевёл",
+        "в втб всё работает",
+    ])
+    def test_bank_case_forms_detected(self, text):
+        """Грамматические формы банков (в/из/от/через + падеж)."""
+        assert "[БАНК]" in normalize_entities(text)
+
+
+class TestTokenCollapse:
+    def test_double_bank_collapses(self):
+        # «Сбер и Сбербанк» → оба срабатывают → два токена подряд → 1.
+        result = normalize_entities("Сбер Сбербанк")
+        assert result.count("[БАНК]") == 1
+
+    def test_triple_bank_collapses(self):
+        result = normalize_entities("Сбер Сбербанк сбер")
+        assert result.count("[БАНК]") == 1
+
+    def test_mixed_tokens_not_collapsed(self):
+        # Разные токены не должны схлопываться.
+        result = normalize_entities("Сбер оформил ипотеку")
+        assert "[БАНК]" in result
+        assert "[ПРОДУКТ]" in result
+
+    def test_product_double_collapses(self):
+        result = normalize_entities("ипотека ипотечный кредит")
+        assert result.count("[ПРОДУКТ]") == 1
+
+    def test_amount_double_collapses(self):
+        result = normalize_entities("100 руб 500 руб")
+        assert result.count("[СУММА]") == 1
+
+    def test_collapse_preserves_other_text(self):
+        result = normalize_entities("проблема с Сбер Сбербанк всё плохо")
+        assert "проблема" in result
+        assert "всё плохо" in result
+        assert result.count("[БАНК]") == 1

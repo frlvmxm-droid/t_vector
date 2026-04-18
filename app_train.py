@@ -26,7 +26,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
-from sklearn.pipeline import FeatureUnion
+from sklearn.pipeline import FeatureUnion, Pipeline as _SklPipeline
+from sklearn.preprocessing import Normalizer as _SklNormalizer
 
 from constants import (
     MODEL_DIR, CLASS_DIR, CLUST_DIR,
@@ -3394,7 +3395,18 @@ class TrainTabMixin:
                     log_cb=_em_slog,
                     progress_cb=_prog_em,
                 )
-                _em_feats = FeatureUnion([("tfidf", _tfidf_p), ("sbert", _sbert_p)])
+                # TF-IDF здесь проходит SVD + L2 (force_svd=True), SBERT отдаёт
+                # ненормированные эмбеддинги — выравниваем масштаб вручную.
+                # Вес sbert > tfidf, чтобы 384 dense-признака не тонули в
+                # TF-IDF(SVD-200) при последующем LinearSVC.
+                _sbert_pipe = _SklPipeline([
+                    ("sbert", _sbert_p),
+                    ("l2", _SklNormalizer(norm="l2", copy=False)),
+                ])
+                _em_feats = FeatureUnion(
+                    [("tfidf", _tfidf_p), ("sbert", _sbert_pipe)],
+                    transformer_weights={"tfidf": 1.0, "sbert": 3.0},
+                )
             elif _em_sb:
                 _em_feats = SBERTVectorizer(
                     model_name=_em_smod,
@@ -3651,10 +3663,23 @@ class TrainTabMixin:
                 log_cb=sbert_log,
                 progress_cb=sbert_prog,
             )
-            features = FeatureUnion([("tfidf", tfidf_part), ("sbert", sbert_part)])
+            # TF-IDF (force_svd=True) уже L2-нормирован на выходе SVD; SBERT
+            # отдаёт ненормированные эмбеддинги → оборачиваем L2-Normalizer,
+            # чтобы магнитуды были сопоставимы. transformer_weights: SBERT 3.0,
+            # потому что 384 dense-признака против ~200 SVD-компонент иначе
+            # недовешиваются в LinearSVC.
+            sbert_pipe = _SklPipeline([
+                ("sbert", sbert_part),
+                ("l2", _SklNormalizer(norm="l2", copy=False)),
+            ])
+            features = FeatureUnion(
+                [("tfidf", tfidf_part), ("sbert", sbert_pipe)],
+                transformer_weights={"tfidf": 1.0, "sbert": 3.0},
+            )
             self.after(0, lambda: self.log_train(
                 "ℹ Режим: SBERT + TF-IDF гибрид (FeatureUnion). "
-                "SVD автоматически включён для TF-IDF части."
+                "SVD автоматически включён для TF-IDF части; "
+                "SBERT L2-нормирован, вес 3.0 vs TF-IDF 1.0."
             ))
 
         elif use_sbert_val:
