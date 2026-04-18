@@ -408,7 +408,9 @@ class App(DepsTabMixin, TrainTabMixin, ApplyTabMixin, ClusterTabMixin, ctk.CTk):
         self.umap_min_dist = tk.DoubleVar(value=0.1)
         self.umap_metric = tk.StringVar(value="cosine")
         self.use_hdbscan = tk.BooleanVar(value=False)  # kept for snap compat
-        self.hdbscan_min_cluster_size = tk.IntVar(value=10)
+        # 0 = авто: max(5, √N). Для выбранного N даёт в 3–10 раз более разумное
+        # значение, чем статичные 10 для любых объёмов.
+        self.hdbscan_min_cluster_size = tk.IntVar(value=0)
         # HDBSCAN min_samples: управляет «консервативностью» — чем больше, тем
         # меньше кластеров и больше шума. None = равно min_cluster_size (sklearn default).
         self.hdbscan_min_samples = tk.IntVar(value=0)   # 0 = auto (= min_cluster_size)
@@ -2308,7 +2310,12 @@ class App(DepsTabMixin, TrainTabMixin, ApplyTabMixin, ClusterTabMixin, ctk.CTk):
             "umap_min_dist":            max(0.0, min(1.0, float(self.umap_min_dist.get()))),
             "umap_metric":              self.umap_metric.get().strip() or "cosine",
             "use_hdbscan":              bool(self.use_hdbscan.get()),
-            "hdbscan_min_cluster_size": max(2, int(self.hdbscan_min_cluster_size.get())),
+            # 0 пропускаем без клампа — он означает «auto» в worker'е
+            # (app_cluster._cluster_step_cluster). Любое положительное → ≥2.
+            "hdbscan_min_cluster_size": (
+                0 if int(self.hdbscan_min_cluster_size.get()) <= 0
+                else max(2, int(self.hdbscan_min_cluster_size.get()))
+            ),
             "hdbscan_min_samples":     max(0, int(self.hdbscan_min_samples.get())),
             "hdbscan_eps":             max(0.0, float(self.hdbscan_eps.get())),
             # — новые селекторы режима кластеризации —

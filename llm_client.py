@@ -111,12 +111,16 @@ class LLMClient:
         system_prompt: str,
         user_prompt: str,
         max_tokens: int,
+        temperature: float | None = None,
     ) -> str:
         raw = "|".join(
             [
                 (provider or "").strip().lower(),
                 (model or "").strip(),
                 str(max_tokens),
+                # temperature меняет детерминированность ответа — разные
+                # значения должны кешироваться раздельно.
+                "t=" + ("default" if temperature is None else f"{temperature:.3f}"),
                 (system_prompt or "").strip(),
                 (user_prompt or "").strip(),
             ]
@@ -271,6 +275,7 @@ class LLMClient:
         system_prompt: str,
         user_prompt: str,
         max_tokens: int,
+        temperature: float | None = None,
     ) -> tuple[str, dict[str, str], dict[str, Any]]:
         """Строит URL, заголовки и payload для конкретного провайдера.
 
@@ -290,6 +295,8 @@ class LLMClient:
                 "system": system_prompt,
                 "messages": [{"role": "user", "content": user_prompt}],
             }
+            if temperature is not None:
+                payload["temperature"] = float(temperature)
         elif p == "openai":
             url = "https://api.openai.com/v1/chat/completions"
             headers = {
@@ -304,6 +311,8 @@ class LLMClient:
                     {"role": "user", "content": user_prompt},
                 ],
             }
+            if temperature is not None:
+                payload["temperature"] = float(temperature)
         elif p == "qwen":
             url = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
             headers = {
@@ -318,6 +327,8 @@ class LLMClient:
                     {"role": "user", "content": user_prompt},
                 ],
             }
+            if temperature is not None:
+                payload["temperature"] = float(temperature)
         elif p == "gigachat":
             url = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
             headers = {
@@ -332,13 +343,18 @@ class LLMClient:
                     {"role": "user", "content": user_prompt},
                 ],
             }
+            if temperature is not None:
+                payload["temperature"] = float(temperature)
         elif p == "ollama":
             url = "http://127.0.0.1:11434/api/chat"
             headers = {"content-type": "application/json"}
+            _options: dict[str, Any] = {"num_predict": max_tokens}
+            if temperature is not None:
+                _options["temperature"] = float(temperature)
             payload = {
                 "model": model,
                 "stream": False,
-                "options": {"num_predict": max_tokens},
+                "options": _options,
                 "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
@@ -516,13 +532,22 @@ class LLMClient:
         max_retries: int = 2,
         backoff_base_sec: float = 0.6,
         backoff_jitter_sec: float = 0.25,
+        temperature: float | None = None,
     ) -> str:
-        """Отправляет запрос к LLM-провайдеру и возвращает текст ответа."""
+        """Отправляет запрос к LLM-провайдеру и возвращает текст ответа.
+
+        temperature=None — используется provider default (обычно 1.0 — высокая
+        вариативность). Фиксированное значение (напр. 0.2) даёт детерминированные
+        ответы для задач с одним правильным результатом — нейминг кластеров,
+        классификация, резюмирование.
+        """
         p = (provider or "").strip().lower()
 
         resolved_api_key = LLMClient._decrypt_and_resolve_key(provider, api_key)
 
-        cache_key = LLMClient._cache_key(provider, model, system_prompt, user_prompt, max_tokens)
+        cache_key = LLMClient._cache_key(
+            provider, model, system_prompt, user_prompt, max_tokens, temperature,
+        )
         cached = LLMClient._cache_get(cache_key)
         if cached is not None:
             if LLMClient._is_circuit_open(provider):
@@ -534,7 +559,7 @@ class LLMClient:
             )
 
         url, headers, payload = LLMClient._build_provider_request(
-            p, model, resolved_api_key, system_prompt, user_prompt, max_tokens
+            p, model, resolved_api_key, system_prompt, user_prompt, max_tokens, temperature,
         )
         LLMClient._validate_url_and_dns(url, p, resolved_api_key)
 

@@ -122,6 +122,7 @@ def extract_cluster_keywords_ctfidf(
     n_clusters: int,
     stop_words=None,
     top_n: int = 12,
+    use_lemma: bool = True,
 ) -> list[str]:
     """
     c-TF-IDF для извлечения ключевых слов кластеров.
@@ -133,6 +134,12 @@ def extract_cluster_keywords_ctfidf(
     Преимущество перед обычным TF-IDF mean:
       • Выделяет слова, специфичные для кластера vs. всего корпуса
       • Общие доменные слова («банк», «клиент») подавляются IDF-компонентой
+
+    use_lemma=True — перед CountVectorizer пропускаем документы через
+    pymorphy-лемматизатор. Склоняемые формы («снял», «снимаю», «снятие»)
+    склеиваются в единую лемму «снять», что в русском в 2–3× уменьшает
+    раздробленность словаря и качественно улучшает c-TF-IDF топ-слова.
+    Если pymorphy3/2 не установлены — лемматизация прозрачно отключается.
     """
     from sklearn.feature_extraction.text import CountVectorizer
 
@@ -147,6 +154,21 @@ def extract_cluster_keywords_ctfidf(
         mask = (labels_arr == k)
         cluster_sizes[k] = float(mask.sum())
         cluster_docs.append(" ".join(docs_arr[mask]))
+
+    # Лемматизация склеивает словоформы до подачи в CountVectorizer.
+    # Делаем здесь, а не на уровне отдельных documents — это дешевле:
+    # n_clusters мега-документов вместо n_docs исходных.
+    if use_lemma:
+        try:
+            from ml_vectorizers import Lemmatizer
+            _lemm = Lemmatizer(include_pos=False).fit(cluster_docs)
+            if getattr(_lemm, "is_active_", False):
+                cluster_docs = list(_lemm.transform(cluster_docs))
+        except Exception as _lemma_exc:
+            _log.debug(
+                "[c-TF-IDF] лемматизация недоступна (%s: %s), работаю без неё",
+                type(_lemma_exc).__name__, _lemma_exc,
+            )
 
     try:
         # ngram_range=(1,3): унаграммы + биграммы + триграммы — ключевые слова

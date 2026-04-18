@@ -393,6 +393,7 @@ class ClusterTabMixin:
         system_prompt: str,
         user_prompt: str,
         max_tokens: int = 128,
+        temperature: float | None = None,
     ) -> str:
         """Единый LLM-клиент для cloud и локальных провайдеров."""
         return LLMClient.complete_text(
@@ -402,6 +403,7 @@ class ClusterTabMixin:
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             max_tokens=max_tokens,
+            temperature=temperature,
         )
 
     @staticmethod
@@ -791,12 +793,13 @@ class ClusterTabMixin:
         _hdb_row.pack(fill="x", pady=(0, 4))
         self._hdb_row = _hdb_row
         ttk.Label(_hdb_row, text="HDBSCAN — min_cluster_size:", style="Card.TLabel").pack(side="left")
-        sp_hdb = ttk.Spinbox(_hdb_row, from_=2, to=500,
+        sp_hdb = ttk.Spinbox(_hdb_row, from_=0, to=500,
                               textvariable=self.hdbscan_min_cluster_size, width=6)
         sp_hdb.pack(side="left", padx=(4, 0))
         self.attach_help(sp_hdb, "HDBSCAN: min_cluster_size",
                          "Минимальное число точек в кластере.\n"
-                         "Рекомендуется: 5–50 (≈ 0.1–1% от числа строк).")
+                         "0 = авто: max(5, √N) — масштабируется под размер датасета.\n"
+                         "Ручное: 5–50 (≈ 0.1–1% от числа строк).")
         ttk.Label(_hdb_row, text="  min_samples:", style="Card.TLabel").pack(side="left", padx=(12, 0))
         sp_hdb_ms = ttk.Spinbox(_hdb_row, from_=0, to=200,
                                  textvariable=self.hdbscan_min_samples, width=5)
@@ -2037,13 +2040,28 @@ class ClusterTabMixin:
                     self.after(0, lambda: self.log_cluster(
                         f"LLM-нейминг кластеров: {_llm_provider}/{_llm_model}…"
                     ))
+                    # Few-shot примеры в системном промпте дают модели эталон
+                    # формата «глагол/существительное-проблема + уточнение»
+                    # и единый тон по всем кластерам — без них модель часто
+                    # выбирает слишком общие («Вопросы по картам») или слишком
+                    # длинные названия. Temperature=0.2 фиксирует результат:
+                    # у одних и тех же входов название воспроизводимо между
+                    # запусками, что важно для сравнения экспериментов.
                     _sys_prompt = (
                         "Ты — аналитик клиентских обращений банка. "
                         "Сформулируй краткое название (3–6 слов) на русском языке, "
                         "отражающее КОНКРЕТНУЮ причину или проблему обращения клиента. "
-                        "Используй глагол или существительное-проблему: "
-                        "«Задержка зачисления платежа», «Блокировка карты при оплате». "
-                        "Отвечай только названием, без пояснений."
+                        "Используй глагол или существительное-проблему, "
+                        "избегай общих слов («вопрос», «проблема» без уточнения). "
+                        "Отвечай только названием, без пояснений и без кавычек.\n\n"
+                        "Примеры корректных названий:\n"
+                        "• «Задержка зачисления платежа»\n"
+                        "• «Блокировка карты при оплате»\n"
+                        "• «Списание комиссии за обслуживание»\n"
+                        "• «Оспаривание операции по карте»\n"
+                        "• «Невозможно войти в мобильное приложение»\n\n"
+                        "Плохие (слишком общие) названия: "
+                        "«Вопрос по карте», «Обращение клиента», «Проблема с банком»."
                     )
                     for _ci, _kw_str in enumerate(kw):
                         if not _kw_str:
@@ -2062,6 +2080,7 @@ class ClusterTabMixin:
                                 system_prompt=_sys_prompt,
                                 user_prompt=_user_msg,
                                 max_tokens=64,
+                                temperature=0.2,
                             )
                             if _name:
                                 cluster_name_map[_ci] = _name
@@ -2121,6 +2140,7 @@ class ClusterTabMixin:
                                 system_prompt=_sys_r,
                                 user_prompt=_user_r,
                                 max_tokens=220,
+                                temperature=0.3,
                             )
                             if _reason:
                                 cluster_reason_map[_ci] = _reason
@@ -2470,6 +2490,7 @@ class ClusterTabMixin:
                     X_clean, labels, K,
                     stop_words=_stop_list,
                     top_n=12,
+                    use_lemma=bool(snap.get("use_lemma_cluster", True)),
                 )
             elif _use_label_kw:
                 kw = extract_cluster_keywords_from_labels(
@@ -2540,6 +2561,44 @@ class ClusterTabMixin:
                 # чтобы в выгрузке не было "пустых" категорий качества.
                 for _cid in _cluster_ids:
                     cluster_quality_map[_cid] = "low"
+
+                # Per-cluster silhouette: в отличие от mean intra-cluster cosine
+                # учитывает и близость к соседним кластерам (inter-cluster).
+                # «Плотный, но пересекающийся с соседом» кластер правильно
+                # классифицируется как низко-качественный.
+                _use_silhouette = len(_cluster_ids) >= 2
+                _sil_per_cluster: dict[int, float] = {}
+                if _use_silhouette:
+                    try:
+                        from sklearn.metrics import silhouette_samples as _sil_samples
+                        _valid_mask = (_labels_coh >= 0)
+                        _Xsil = _Xcoh_n[_valid_mask]
+                        _lsil = _labels_coh[_valid_mask]
+                        # Для датасетов > 10k сэмплируем (silhouette — O(n²)).
+                        _n_sil = len(_lsil)
+                        if _n_sil > 10_000:
+                            _rng = _np.random.default_rng(
+                                snap.get("cluster_random_seed", 42)
+                            )
+                            _idx = _rng.choice(_n_sil, size=10_000, replace=False)
+                            _sil_vals = _sil_samples(_Xsil[_idx], _lsil[_idx],
+                                                     metric="cosine")
+                            _lsil_eff = _lsil[_idx]
+                        else:
+                            _sil_vals = _sil_samples(_Xsil, _lsil, metric="cosine")
+                            _lsil_eff = _lsil
+                        for _cid in _cluster_ids:
+                            _mask_cid = (_lsil_eff == _cid)
+                            if _mask_cid.sum() > 0:
+                                _sil_per_cluster[_cid] = float(_sil_vals[_mask_cid].mean())
+                    except Exception as _sil_exc:
+                        _log.debug(
+                            "silhouette_samples failed (%s), fallback to cosine: %s",
+                            type(_sil_exc).__name__, _sil_exc,
+                        )
+                        _use_silhouette = False
+                        _sil_per_cluster = {}
+
                 for _cid in _cluster_ids:
                     if _cid < 0:
                         continue
@@ -2548,22 +2607,35 @@ class ClusterTabMixin:
                     if len(_pts) < 2:
                         cluster_quality_map[_cid] = "single"
                         continue
-                    # Среднее косинусное сходство = mean(X @ X.T) для нормализованных X
-                    _sim_sum = float(_np.sum(_pts @ _pts.T))
-                    _n_pts = len(_pts)
-                    _mean_sim = (_sim_sum - _n_pts) / (_n_pts * (_n_pts - 1))
-                    # Пороговые значения синхронизированы с подсказкой UI.
-                    if _mean_sim >= 0.50:
-                        cluster_quality_map[_cid] = "high"
-                    elif _mean_sim >= 0.30:
-                        cluster_quality_map[_cid] = "medium"
+                    if _cid in _sil_per_cluster:
+                        # silhouette ∈ [-1, +1]: +1 идеально разделён,
+                        # 0 на границе, <0 скорее принадлежит соседу.
+                        _s = _sil_per_cluster[_cid]
+                        if _s >= 0.35:
+                            cluster_quality_map[_cid] = "high"
+                        elif _s >= 0.10:
+                            cluster_quality_map[_cid] = "medium"
+                        else:
+                            cluster_quality_map[_cid] = "low"
                     else:
-                        cluster_quality_map[_cid] = "low"
+                        # Fallback на mean intra-cluster cosine, если silhouette
+                        # недоступен (<2 кластеров или исключение).
+                        _sim_sum = float(_np.sum(_pts @ _pts.T))
+                        _n_pts = len(_pts)
+                        _mean_sim = (_sim_sum - _n_pts) / (_n_pts * (_n_pts - 1))
+                        if _mean_sim >= 0.50:
+                            cluster_quality_map[_cid] = "high"
+                        elif _mean_sim >= 0.30:
+                            cluster_quality_map[_cid] = "medium"
+                        else:
+                            cluster_quality_map[_cid] = "low"
                 _q_counts = {}
                 for v in cluster_quality_map.values():
                     _q_counts[v] = _q_counts.get(v, 0) + 1
-                self.after(0, lambda c=dict(_q_counts): self.log_cluster(
-                    "Качество кластеров: " + ", ".join(f"{k}={v}" for k, v in sorted(c.items()))
+                _metric_name = "silhouette" if _sil_per_cluster else "cosine"
+                self.after(0, lambda c=dict(_q_counts), m=_metric_name: self.log_cluster(
+                    f"Качество кластеров ({m}): "
+                    + ", ".join(f"{k}={v}" for k, v in sorted(c.items()))
                 ))
             except Exception as _coh_e:
                 self.after(0, lambda e=_coh_e: self.log_cluster(
@@ -3823,6 +3895,22 @@ class ClusterTabMixin:
                         if use_bertopic
                         else snap.get("hdbscan_min_cluster_size", 10)
                     )
+                    # Sentinel 0 (или отрицательное) = «auto»: масштабируется
+                    # sqrt(N). Для 100 строк даёт 10, для 10 000 — 100;
+                    # избавляет пользователя от ручного подбора для разных
+                    # размеров датасетов.
+                    try:
+                        _hdb_min_int = int(_hdb_min)
+                    except (TypeError, ValueError):
+                        _hdb_min_int = 0
+                    if _hdb_min_int <= 0:
+                        _hdb_auto = max(5, int(len(_Xv_hdb) ** 0.5))
+                        self.after(0, lambda v=_hdb_auto, n=len(_Xv_hdb): self.log_cluster(
+                            f"HDBSCAN min_cluster_size=auto → {v} (√{n})"
+                        ))
+                        _hdb_min = _hdb_auto
+                    else:
+                        _hdb_min = _hdb_min_int
                     _hdbscan_ok = False
                     try:
                         try:
