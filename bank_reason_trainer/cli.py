@@ -49,25 +49,38 @@ def _stderr_logger(msg: str) -> None:
 # ---------------------------------------------------------------------------
 
 def cmd_cluster(args: argparse.Namespace) -> int:
-    """Run the full 4-stage clustering pipeline via `ClusteringWorkflow`.
+    """Skeleton — dispatch to `ClusteringWorkflow.run`.
 
-    Heavy deps (scikit-learn, SBERT) load lazily only when this command
-    is dispatched, so `python -m bank_reason_trainer --help` stays fast
-    and `train`/`apply` don't pay the import cost.
+    The 4 pipeline stages (build_vectors, run_clustering,
+    postprocess_clusters, export_cluster_outputs) are not yet ported
+    out of `app_cluster.run_cluster()`; they raise
+    `NotImplementedError`. Running the full pipeline headlessly thus
+    fails after the prepare-inputs stage. This command refuses to
+    proceed without an explicit `--allow-skeleton` opt-in, matching
+    the `train` / `apply` skeletons. See ADR-0002.
     """
+    if not args.allow_skeleton:
+        _stderr_logger(
+            "cluster: skeleton only — pipeline stages 2–5 raise "
+            "NotImplementedError until Wave 3a lands. Pass "
+            "--allow-skeleton to run the prepare-inputs stage and exit."
+        )
+        return 2
+
     from cluster_workflow_service import ClusteringWorkflow   # local import: heavy
 
     snap = _load_json(args.snap) if args.snap else {}
-    result = ClusteringWorkflow.run(
+    # `prepare_only` runs the one real stage; anything else raises. We call
+    # it explicitly so the CLI has something observable to assert on.
+    prepared = ClusteringWorkflow.prepare_only(
         files_snapshot=list(args.files or []),
         snap=snap,
-        log_cb=_stderr_logger if args.verbose else None,
     )
-    # Emit a compact summary to stdout so scripts can parse it.
     summary = {
-        "n_clusters": int(result.n_clusters),
-        "n_noise": int(result.n_noise),
-        "export": getattr(result.export, "__dict__", {}),
+        "stage": "prepare_inputs",
+        "files": list(prepared.files_snapshot),
+        "role": prepared.role_context.role_label,
+        "note": "stages 2-5 not ported; see ADR-0002 / plan Wave 3a",
     }
     json.dump(summary, sys.stdout, ensure_ascii=False, indent=2)
     sys.stdout.write("\n")
@@ -138,10 +151,14 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="command", required=True)
 
     # cluster
-    pc = sub.add_parser("cluster", help="Run the full clustering pipeline.")
+    pc = sub.add_parser("cluster", help="Skeleton — clustering pipeline (Wave 3a).")
     pc.add_argument("--files", nargs="+", required=True, help="Input .xlsx/.csv file paths.")
     pc.add_argument("--snap", default=None, help="JSON file with snap parameters.")
     pc.add_argument("--verbose", action="store_true", help="Log each stage to stderr.")
+    pc.add_argument(
+        "--allow-skeleton", action="store_true",
+        help="Acknowledge that stages 2-5 of the pipeline are not yet ported.",
+    )
     pc.set_defaults(func=cmd_cluster)
 
     # train

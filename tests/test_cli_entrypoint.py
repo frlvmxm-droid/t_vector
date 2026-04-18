@@ -50,51 +50,82 @@ def test_parser_train_requires_allow_skeleton():
 
 
 # ---------------------------------------------------------------------------
-# cluster
+# cluster — skeleton until Wave 3a pipeline port
 # ---------------------------------------------------------------------------
 
-def test_cluster_calls_workflow_and_prints_summary(tmp_path, capsys):
+def test_cluster_refuses_without_allow_skeleton(capsys):
+    """Stages 2-5 raise NotImplementedError, so the CLI gates behind the
+    same --allow-skeleton opt-in as `train`/`apply` to avoid advertising
+    a full pipeline it cannot run."""
+    rc = main(["cluster", "--files", "a.xlsx"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "skeleton" in err.lower()
+
+
+def test_cluster_allow_skeleton_runs_prepare_only(tmp_path, capsys):
+    """With --allow-skeleton, the CLI runs the one real stage
+    (prepare_inputs) and emits a JSON summary marking the port gap."""
     from types import SimpleNamespace
 
     snap_path = tmp_path / "snap.json"
-    snap_path.write_text(json.dumps({"cluster_algo": "kmeans", "k_clusters": 3}), encoding="utf-8")
+    snap_path.write_text(
+        json.dumps({"cluster_role_mode": "all", "ignore_chatbot_cluster": True}),
+        encoding="utf-8",
+    )
 
-    fake_export = SimpleNamespace(written_paths=["/tmp/out.xlsx"])
-    fake_result = SimpleNamespace(n_clusters=4, n_noise=1, export=fake_export)
-
-    with patch("cluster_workflow_service.ClusteringWorkflow.run", return_value=fake_result) as mock_run:
-        rc = main(["cluster", "--files", "f1.xlsx", "f2.xlsx", "--snap", str(snap_path)])
+    fake_prepared = SimpleNamespace(
+        files_snapshot=["f1.xlsx", "f2.xlsx"],
+        role_context=SimpleNamespace(role_label="Весь диалог"),
+    )
+    with patch(
+        "cluster_workflow_service.ClusteringWorkflow.prepare_only",
+        return_value=fake_prepared,
+    ) as mock_prep:
+        rc = main([
+            "cluster", "--allow-skeleton",
+            "--files", "f1.xlsx", "f2.xlsx",
+            "--snap", str(snap_path),
+        ])
 
     assert rc == 0
-    mock_run.assert_called_once()
-    # files_snapshot must be a list (not generator / tuple)
-    kwargs = mock_run.call_args.kwargs
-    args_ = mock_run.call_args.args
-    # function was called with keyword args
-    assert kwargs.get("files_snapshot") == ["f1.xlsx", "f2.xlsx"] or (args_ and args_[0] == ["f1.xlsx", "f2.xlsx"])
-    out = capsys.readouterr().out
-    parsed = json.loads(out)
-    assert parsed["n_clusters"] == 4
-    assert parsed["n_noise"] == 1
+    mock_prep.assert_called_once()
+    parsed = json.loads(capsys.readouterr().out)
+    assert parsed["stage"] == "prepare_inputs"
+    assert parsed["files"] == ["f1.xlsx", "f2.xlsx"]
+    assert "Wave 3a" in parsed["note"]
 
 
 def test_cluster_missing_snap_returns_error(capsys):
-    rc = main(["cluster", "--files", "a.xlsx", "--snap", "/does/not/exist.json"])
+    """Snap-file errors surface as exit code 1 even with --allow-skeleton."""
+    rc = main([
+        "cluster", "--allow-skeleton",
+        "--files", "a.xlsx",
+        "--snap", "/does/not/exist.json",
+    ])
     assert rc == 1
     err = capsys.readouterr().err
     assert "snap file not found" in err
 
 
 def test_cluster_without_snap_uses_empty_dict(capsys):
-    """Omitting --snap is legal: an empty dict forwards to the workflow."""
+    """Omitting --snap forwards an empty dict to ClusteringWorkflow.prepare_only."""
     from types import SimpleNamespace
 
-    fake_result = SimpleNamespace(n_clusters=0, n_noise=0, export=SimpleNamespace())
-    with patch("cluster_workflow_service.ClusteringWorkflow.run", return_value=fake_result) as mock_run:
-        rc = main(["cluster", "--files", "a.xlsx"])
+    fake_prepared = SimpleNamespace(
+        files_snapshot=["a.xlsx"],
+        role_context=SimpleNamespace(role_label="Весь диалог"),
+    )
+    with patch(
+        "cluster_workflow_service.ClusteringWorkflow.prepare_only",
+        return_value=fake_prepared,
+    ) as mock_prep:
+        rc = main(["cluster", "--allow-skeleton", "--files", "a.xlsx"])
     assert rc == 0
-    kwargs = mock_run.call_args.kwargs
-    assert kwargs.get("snap") == {} or (mock_run.call_args.args and mock_run.call_args.args[1] == {})
+    kwargs = mock_prep.call_args.kwargs
+    args_ = mock_prep.call_args.args
+    passed_snap = kwargs.get("snap") if "snap" in kwargs else (args_[1] if len(args_) > 1 else None)
+    assert passed_snap == {}
 
 
 # ---------------------------------------------------------------------------
@@ -130,11 +161,11 @@ def test_apply_refuses_without_allow_skeleton(capsys):
 
 def test_debug_flag_reraises():
     with patch(
-        "cluster_workflow_service.ClusteringWorkflow.run",
+        "cluster_workflow_service.ClusteringWorkflow.prepare_only",
         side_effect=RuntimeError("boom"),
     ):
         with pytest.raises(RuntimeError, match="boom"):
-            main(["--debug", "cluster", "--files", "a.xlsx"])
+            main(["--debug", "cluster", "--allow-skeleton", "--files", "a.xlsx"])
 
 
 # ---------------------------------------------------------------------------

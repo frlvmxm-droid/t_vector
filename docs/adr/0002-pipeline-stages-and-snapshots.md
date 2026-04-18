@@ -1,7 +1,23 @@
 # ADR-0002: Pipeline stages with frozen input snapshots
 
 ## Status
-Accepted (Wave 3 partial landed `ff8503f`; full behavioural migration scheduled for Wave 3a/3b/3c).
+**Scaffolding only; behavioural migration pending Wave 3a.**
+
+| Piece | State |
+|---|---|
+| Pure-function *types* (`VectorPack`, `ClusterResult`, `PostprocessResult`, `ExportSummary`) | ✅ Landed (`app_cluster_pipeline.py:25-49`) |
+| `prepare_inputs` (Stage 1) | ✅ Real implementation (pure, no ML math) |
+| `build_vectors` / `run_clustering` / `postprocess_clusters` / `export_cluster_outputs` | ⏳ **Raise `NotImplementedError`** — real math still lives in `app_cluster.run_cluster()` ~3307-4273 |
+| Service-layer frozen snap (`ClusteringWorkflow.run` with `MappingProxyType`) | ✅ Landed (`cluster_workflow_service.py:68-70`) |
+| Golden fixture + Hungarian-matching test | ✅ Landed (`tests/test_cluster_golden_fixture.py`) |
+| `ClusterRunState` frozen+slots | ⏳ Pending Wave 3b (still `@dataclass` with 38 mutable fields) |
+| `run_cluster()` ≤ 250 LOC | ⏳ Pending Wave 3a-3c (still 967 LOC) |
+
+Until the stages above land, any caller driving the pipeline end-to-end
+(e.g. `bank_reason_trainer cluster --allow-skeleton`) runs only Stage 1
+and emits a `"Wave 3a"` note in its summary. This honesty is enforced by
+the stubs raising instead of returning shape-matching `None`s — see the
+`_STAGES_NOT_PORTED_MSG` sentinel in `app_cluster_pipeline.py`.
 
 ## Context
 `run_cluster()` in `app_cluster.py` is ~969 LOC and mutates a wide

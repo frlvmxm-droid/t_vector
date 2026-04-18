@@ -212,14 +212,39 @@ def prepare_inputs(files_snapshot: List[str], snap: Mapping[str, object]) -> Pre
     )
 
 
+_STAGES_NOT_PORTED_MSG = (
+    "Pipeline stage {name!r} is not yet ported. The real math still lives in "
+    "app_cluster.run_cluster() around lines 3307–4273; ADR-0002 tracks the "
+    "migration (Wave 3a). Calling the pipeline adapter directly would silently "
+    "drop vectors/labels — see the previous no-op implementation. Use "
+    "app_cluster.ClusterTabMixin.run_cluster() until the migration lands, or "
+    "bypass this module with unit-tested replacements."
+)
+
+
 def build_vectors(prepared: PreparedInputs, snap: Mapping[str, object]) -> VectorPack:
-    """Stage 2: адаптер для построения векторов (фактическая математика остаётся в orchestrator)."""
-    return VectorPack(prepared=prepared, vectors=None, meta={"snap": _as_cluster_snapshot(snap)})
+    """Stage 2 (NOT PORTED): produce sample × feature vectors.
+
+    Must return a populated ``VectorPack.vectors`` (e.g. ``scipy.sparse``
+    matrix for TF-IDF or ``np.ndarray`` for SBERT). The previous stub
+    returned ``vectors=None`` with ``meta={"snap": ...}``, which mimicked
+    the shape of a real call while silently dropping the computation —
+    that pretence is removed in favour of an explicit failure until the
+    Wave 3a port of ``run_cluster()``'s Stage-2 block lands.
+    """
+    _ = (prepared, snap)  # kept for signature stability against the future port.
+    raise NotImplementedError(_STAGES_NOT_PORTED_MSG.format(name="build_vectors"))
 
 
 def run_clustering(vectors: VectorPack, snap: Mapping[str, object]) -> ClusterResult:
-    """Stage 3: адаптер запуска кластеризации (математика не меняется в этом PR)."""
-    return ClusterResult(vectors=vectors, labels=None, meta={"snap": _as_cluster_snapshot(snap)})
+    """Stage 3 (NOT PORTED): fit a clustering algorithm and predict labels.
+
+    Must return a populated ``ClusterResult.labels`` matching the algo
+    branch selected via ``snap['cluster_algo']`` (kmeans / hdbscan /
+    bertopic / lda / fastopic). The previous stub returned ``labels=None``.
+    """
+    _ = (vectors, snap)
+    raise NotImplementedError(_STAGES_NOT_PORTED_MSG.format(name="run_clustering"))
 
 
 def postprocess_clusters(
@@ -227,13 +252,17 @@ def postprocess_clusters(
     prepared: PreparedInputs,
     snap: Mapping[str, object],
 ) -> PostprocessResult:
-    """Stage 4: адаптер постобработки (без изменения текущего поведения)."""
-    return PostprocessResult(
-        result=result,
-        payload={"prepared": prepared, "snap": _as_cluster_snapshot(snap)},
-    )
+    """Stage 4 (NOT PORTED): merge + name + diagnose clusters.
+
+    Must return a populated ``PostprocessResult.payload`` with merged
+    labels, cluster names (LLM or centroid-keyword), and diagnostics
+    (silhouette / representative texts / noise share).
+    """
+    _ = (result, prepared, snap)
+    raise NotImplementedError(_STAGES_NOT_PORTED_MSG.format(name="postprocess_clusters"))
 
 
 def export_cluster_outputs(postprocessed: PostprocessResult, snap: Mapping[str, object]) -> ExportSummary:
-    """Stage 5: адаптер экспорта результатов (без изменения текущего поведения)."""
-    return ExportSummary(postprocessed=postprocessed, outputs={"snap": _as_cluster_snapshot(snap)})
+    """Stage 5 (NOT PORTED): write XLSX/CSV outputs with per-row cluster assignments."""
+    _ = (postprocessed, snap)
+    raise NotImplementedError(_STAGES_NOT_PORTED_MSG.format(name="export_cluster_outputs"))
