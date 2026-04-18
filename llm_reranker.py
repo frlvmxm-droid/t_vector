@@ -160,7 +160,7 @@ def rerank_top_k(
             _log.warning("llm rerank failed on row %d: %s", i, e)
             out.append(str(fb))
             _n_fail += 1
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — per-row safety net; one bad row must not abort the whole batch (fallback to argmax)
             _log.warning("llm rerank unexpected error on row %d: %s", i, e)
             out.append(str(fb))
             _n_fail += 1

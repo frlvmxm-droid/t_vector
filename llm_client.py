@@ -83,7 +83,7 @@ def is_safe_url(
             logger.info("ssrf-check host=%s ips=%s", hostname, ",".join(ips))
         if not _all_ips_safe(ips, allow_private_hosts=allow_private_hosts):
             return False
-    except Exception:
+    except Exception:  # noqa: BLE001 — SSRF check is fail-closed; any DNS/resolution error → deny
         return False
     return True
 
@@ -443,7 +443,7 @@ class LLMClient:
         host = (urlparse(url).hostname or "").strip()
         try:
             ips_now = _resolve_host_ips(host)
-        except Exception as ex:
+        except (socket.gaierror, socket.herror, OSError) as ex:
             raise FeatureBuildError(
                 f"[error_code=LLM_DNS_RESOLVE_FAILED] stage=llm.request hint=Не удалось разрешить host {host}: {ex}"
             ) from ex

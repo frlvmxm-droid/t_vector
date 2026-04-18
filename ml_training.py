@@ -242,7 +242,7 @@ def _oversample_rare_classes(
                 _nn.fit(_M[_idx])
                 _nn_cache["nn_by_cls"][_cls] = _nn
                 _nn_cache["idx_by_cls"][_cls] = _idx
-        except Exception as _nn_exc:
+        except Exception as _nn_exc:  # noqa: BLE001 — sklearn NN/vectorizer cold-start failures are diverse; fall back safely
             _log.warning("nn_mix index build failed: %s", _nn_exc)
             _nn_cache["failed"] = True
 
@@ -280,7 +280,7 @@ def _oversample_rare_classes(
             _mixed = list(_take_a) + list(_take_b)
             _rng.shuffle(_mixed)
             return " ".join(str(t) for t in _mixed)
-        except Exception as _mix_exc:
+        except Exception as _mix_exc:  # noqa: BLE001 — best-effort augmentation; any failure falls back to augment_light
             _log.debug("nn_mix_text fallback to augment_light: %s", _mix_exc)
             return _augment_light_text(base_text)
 
@@ -693,7 +693,7 @@ def _compute_validation_extras(
                     _worst = sorted(_pc_ece.items(), key=lambda kv: kv[1], reverse=True)[:3]
                     _lines = ", ".join(f"«{c}»={v:.3f}" for c, v in _worst)
                     log_cb(f"[Калибровка] Худшие per-class ECE: {_lines}")
-        except Exception as _te:
+        except Exception as _te:  # noqa: BLE001 — calibration is diagnostic-only; any failure must not block training
             _log.debug("temperature scaling failed: %s", _te)
 
     # ── Анализ путаниц: топ ошибочных пар с примерами текстов ──
@@ -763,7 +763,7 @@ def _compute_ece_mce(
             ece_acc += mask.sum() / n * gap
             mce_acc = max(mce_acc, gap)
         return float(ece_acc), float(mce_acc)
-    except Exception as _ece_exc:
+    except (ValueError, KeyError, IndexError, TypeError, ZeroDivisionError) as _ece_exc:
         _log.debug("ECE/MCE computation failed: %s", _ece_exc)
         return 0.0, 0.0
 
@@ -788,7 +788,7 @@ def _compute_brier_score(
                 one_hot[i, j] = 1.0
         diff = proba - one_hot
         return float(np.mean(np.sum(diff * diff, axis=1)))
-    except Exception as _bs_exc:
+    except (ValueError, KeyError, IndexError, TypeError) as _bs_exc:
         _log.debug("Brier computation failed: %s", _bs_exc)
         return 0.0
 
@@ -823,7 +823,7 @@ def _compute_per_class_ece(
                 ece_j += mask.sum() / n * abs(bin_acc - bin_conf)
             out[str(cls)] = float(ece_j)
         return out
-    except Exception as _pc_exc:
+    except (ValueError, KeyError, IndexError, TypeError, ZeroDivisionError) as _pc_exc:
         _log.debug("per-class ECE failed: %s", _pc_exc)
         return {}
 
@@ -918,7 +918,7 @@ def cv_evaluate(
                 f"  (фолды: {_fold_str})"
             )
         return result
-    except Exception as _cve:
+    except Exception as _cve:  # noqa: BLE001 — CV scorer can raise sklearn internals (BrokenProcessPool, FitFailedWarning-as-error); log + return
         if log_cb:
             log_cb(f"[CV] не удалось выполнить: {type(_cve).__name__}: {_cve}")
         return {}
@@ -1085,7 +1085,7 @@ def train_model(
                 _var_total = float(_svd_step.explained_variance_ratio_.sum())
                 _n_comp = len(_svd_step.explained_variance_ratio_)
                 log_cb(f"[SVD] объяснённая дисперсия: {_var_total:.3f} ({_n_comp} компонент)")
-        except Exception as _svd_exc:
+        except Exception as _svd_exc:  # noqa: BLE001 — diagnostic logging only; skip silently on any inspection failure
             log_cb(f"[SVD] диагностика недоступна: {type(_svd_exc).__name__}: {_svd_exc}")
 
     if progress_cb:
@@ -1104,7 +1104,7 @@ def train_model(
         extras["model_size_bytes"] = _buf.tell()
         if log_cb:
             log_cb(f"[Обучение] Размер модели: {extras['model_size_bytes'] // 1024} КБ")
-    except Exception as _sz_exc:
+    except Exception as _sz_exc:  # noqa: BLE001 — size estimate is telemetry; joblib/pickle internals vary by version
         _log.debug("model_size_bytes estimation failed: %s", _sz_exc)
     extras.update(_cv_results)
 
@@ -1190,7 +1190,7 @@ def find_best_c(
                 import gc as _gc
                 _gc.collect()   # освобождаем то, что можно, до выхода из функции
             raise
-        except Exception as _e:
+        except Exception as _e:  # noqa: BLE001 — sklearn CV for a single C can fail for pathological splits; mark C=0 and continue
             _log.warning("GridSearch: cross_val_score failed for C=%s: %s", c, _e)
             scores[c] = 0.0
 
@@ -1265,7 +1265,7 @@ def optuna_tune(
                         if _ngram_min <= _ngram_max:
                             _step.ngram_range = (_ngram_min, _ngram_max)
                         break
-        except Exception as _feat_exc:
+        except Exception as _feat_exc:  # noqa: BLE001 — sklearn FeatureUnion clone can raise varied errors; fall back to original features
             _log.debug("optuna feature clone failed: %s", _feat_exc)
             feat_clone = features
 
@@ -1275,7 +1275,7 @@ def optuna_tune(
                 pipe, X, y, cv=skf, scoring="f1_macro", n_jobs=n_jobs,
             )
             score = float(np.mean(cv_scores))
-        except Exception as _cv_exc:
+        except Exception as _cv_exc:  # noqa: BLE001 — Optuna trial must never crash outer study; score=0 signals bad config
             _log.debug("optuna cross_val_score failed: %s", _cv_exc)
             score = 0.0
 
@@ -1371,7 +1371,7 @@ def confident_learning_detect(
                     global_ci = cls_idx.get(cls_name, -1)
                     if global_ci >= 0:
                         oof_proba[global_i, global_ci] = fold_proba[local_i, local_ci]
-        except Exception as _e:
+        except Exception as _e:  # noqa: BLE001 — single fold failure must not abort CL pipeline; other folds compensate
             _log.warning("Confident Learning fold %d failed: %s", fold_i, _e)
 
     # Пороги уверенности по классу
