@@ -164,7 +164,10 @@ def extract_cluster_keywords_ctfidf(
             _lemm = Lemmatizer(include_pos=False).fit(cluster_docs)
             if getattr(_lemm, "is_active_", False):
                 cluster_docs = list(_lemm.transform(cluster_docs))
-        except Exception as _lemma_exc:
+        except (ImportError, RuntimeError, ValueError) as _lemma_exc:
+            # ImportError: pymorphy2/3 absent. RuntimeError/ValueError:
+            # dictionary load / UD-model quirks. Lemmatization is advisory,
+            # so we fall back to raw tokens on any of these.
             _log.debug(
                 "[c-TF-IDF] лемматизация недоступна (%s: %s), работаю без неё",
                 type(_lemma_exc).__name__, _lemma_exc,
@@ -183,7 +186,9 @@ def extract_cluster_keywords_ctfidf(
             max_features=50_000,
         )
         X_counts = cv.fit_transform(cluster_docs)
-    except Exception as _ctfidf_exc:
+    except ValueError as _ctfidf_exc:
+        # sklearn CountVectorizer raises ValueError on empty-vocab / stop-words-only
+        # inputs. Anything else (e.g. MemoryError on huge corpora) should propagate.
         _log.warning(
             "[c-TF-IDF] CountVectorizer не удался: %s: %s",
             type(_ctfidf_exc).__name__, _ctfidf_exc,
@@ -329,7 +334,8 @@ def detect_near_duplicate_conflicts(
             max_features=20_000, min_df=1,
         )
         _M = _vec.fit_transform(_X)
-    except Exception:
+    except ValueError:
+        # sklearn raises ValueError on empty / stop-words-only corpora.
         return []
 
     _n = len(_X)

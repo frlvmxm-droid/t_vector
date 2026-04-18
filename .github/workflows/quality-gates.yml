@@ -67,11 +67,20 @@ jobs:
             llm_reranker.py cluster_workflow_service.py \
             app_train_service.py bank_reason_trainer/cli.py
 
-      - name: Ruff BLE (warn-only — broad-except audit, Wave 5)
+      - name: Ruff BLE (blocking on gated-17)
         run: |
-          # BLE001 = bare `except Exception`. 251 sites today; target ≤35.
-          # Warn-only until audit in Wave 5; flip to blocking once narrowed.
-          ruff check --select=BLE --output-format=concise . || true
+          # BLE001 = `except Exception` without a documented reason. On the
+          # gated-17 list this rule is now blocking: narrow the exception
+          # type, or annotate with `# noqa: BLE001 — <reason>` to keep the
+          # audit trail honest. Repo-wide there are still ~225 sites (P4.b
+          # follow-up); they are discovered via weekly-quality-scan.yml.
+          ruff check --select=BLE --output-format=concise \
+            workflow_contracts.py artifact_contracts.py \
+            ml_core.py ml_compat.py ml_diagnostics.py ml_distillation.py \
+            ml_mlm_pretrain.py excel_utils.py entity_normalizer.py \
+            model_loader.py llm_client.py llm_reranker.py \
+            snap_utils.py cluster_run_stages.py llm_key_store.py \
+            bank_reason_trainer/__init__.py bank_reason_trainer/__main__.py
 
   security:
     name: Security scan (bandit)

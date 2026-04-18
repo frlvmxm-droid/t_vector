@@ -145,7 +145,7 @@ def open_tabular(path: Path) -> Iterator[Iterator[tuple]]:
                 fobj.read(1024)          # тестовое чтение
                 fobj.seek(0)
                 break
-            except Exception:
+            except (UnicodeDecodeError, OSError):
                 if fobj:
                     fobj.close()
                 fobj = None

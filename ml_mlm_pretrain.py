@@ -40,7 +40,10 @@ def is_available() -> bool:
             importlib.util.find_spec("transformers") is not None
             and importlib.util.find_spec("datasets") is not None
         )
-    except Exception:
+    except (ImportError, ValueError):
+        # ImportError: importlib.util missing (impossible in supported
+        # pythons, but keeps static analysers honest). ValueError:
+        # find_spec raises on malformed dotted names — treated as "absent".
         return False
 
 

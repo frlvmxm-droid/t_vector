@@ -46,7 +46,7 @@ def apply_early_compat_patches() -> None:
             try:
                 import torch as _torch_imported
                 _torch_module = _torch_imported
-            except Exception as _e_torch_early:
+            except ImportError as _e_torch_early:
                 _log.warning(
                     "[ml_compat] ранний патч torch.__version__: torch не импортируется (%s). "
                     "Это нормально, если torch не установлен.",
@@ -54,13 +54,13 @@ def apply_early_compat_patches() -> None:
                 )
                 _torch_module = None
         if _torch_module is not None and getattr(_torch_module, "__version__", None) is None:
+            import importlib.metadata as _imeta_early
             try:
-                import importlib.metadata as _imeta_early
                 _torch_module.__version__ = _imeta_early.version("torch")
-            except Exception:
+            except _imeta_early.PackageNotFoundError:
                 _torch_module.__version__ = "2.4.0"
         _PATCH_APPLIED = True
-    except Exception as _e_early_patch:
+    except Exception as _e_early_patch:  # noqa: BLE001 — outermost safety net; torch.__version__ patch must never crash the import chain
         _log.warning(
             "[ml_compat] ранний патч torch.__version__ завершился с ошибкой: %s",
             _e_early_patch,
