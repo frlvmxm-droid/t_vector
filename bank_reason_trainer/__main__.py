@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Shim so `python -m bank_reason_trainer …` works."""
 from __future__ import annotations
 

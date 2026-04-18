@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """BankReasonTrainer — headless CLI entrypoint package.
 
 Provides a Tk-free surface for the three domain operations

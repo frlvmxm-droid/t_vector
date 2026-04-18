@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 cluster_run_stages — frozen stage-scoped views of ClusterRunState.
 

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Утилиты безопасного хранения/чтения API-ключей LLM."""
 from __future__ import annotations
 
