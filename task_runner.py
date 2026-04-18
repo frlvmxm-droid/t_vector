@@ -1,10 +1,10 @@
-# -*- coding: utf-8 -*-
 """Единый lifecycle long-task и стандарт ошибок для UI-потоков."""
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any, Optional
 from uuid import uuid4
-from typing import Any, Callable, Optional
 
 
 @dataclass(frozen=True)
@@ -26,7 +26,7 @@ class ErrorEnvelope:
         error_code: str,
         stage: str,
         hint: str,
-    ) -> "ErrorEnvelope":
+    ) -> ErrorEnvelope:
         return cls(
             error_code=error_code,
             stage=stage,
@@ -123,3 +123,61 @@ class OperationLifecycle:
         self.log_fn(envelope.format_for_log())
         self.log_fn("Traceback:\n" + traceback_text)
         self.finalize()
+
+
+@dataclass(frozen=True)
+class LongTaskUIContext:
+    """Возвращается ``prepare_long_task_ui``. Объединяет три объекта,
+    которые должны жить вместе на время длинной задачи:
+      * ``controller`` — WorkflowProgressController c six-tuple Tk-переменных;
+      * ``ui_prog``    — closure ``(pct, status) -> None`` для worker-потока;
+      * ``lifecycle``  — OperationLifecycle для success/cancel/error веток.
+    """
+
+    controller: Any
+    ui_prog: Callable[[float, str], None]
+    lifecycle: OperationLifecycle
+
+
+def prepare_long_task_ui(
+    *,
+    owner: Any,
+    progress_var: Any,
+    status_var: Any,
+    pct_var: Any,
+    phase_var: Any,
+    speed_var: Any,
+    eta_var: Any,
+    run_button: Any,
+    run_button_idle_text: str,
+    stop_button: Any,
+    log_fn: Callable[[str], None],
+) -> LongTaskUIContext:
+    """Создаёт ``WorkflowProgressController`` + ``ui_prog`` + ``OperationLifecycle``
+    одним вызовом. Устраняет повтор из 3-х call-site'ов (train/apply/cluster).
+
+    Выносится в task_runner.py потому, что все три callsite'а выстроены
+    одинаково: сначала ``begin_long_task``, потом 10–12 строк boilerplate
+    для progress/lifecycle. После вызова — одна точка входа, уменьшает
+    вероятность drift-ошибок (пропустить speed_var и т.п.).
+
+    Внимание: ``WorkflowProgressController`` импортируется лениво, чтобы
+    task_runner оставался без тяжёлых UI-зависимостей (используется в тестах).
+    """
+    from workflow_controller import WorkflowProgressController  # локальный импорт
+
+    controller = WorkflowProgressController(
+        progress_var, status_var, pct_var, phase_var, speed_var, eta_var,
+    )
+
+    def ui_prog(pct: float, status: str) -> None:
+        controller.update(pct, status)
+
+    lifecycle = OperationLifecycle(
+        owner=owner,
+        run_button=run_button,
+        run_button_idle_text=run_button_idle_text,
+        stop_button=stop_button,
+        log_fn=log_fn,
+    )
+    return LongTaskUIContext(controller=controller, ui_prog=ui_prog, lifecycle=lifecycle)

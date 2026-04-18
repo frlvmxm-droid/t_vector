@@ -76,7 +76,6 @@ from app_cluster_service import (
     resolve_api_key,
 )
 from cluster_ui_builder import build_cluster_primary_sections
-from workflow_controller import WorkflowProgressController
 from cluster_run_coordinator import prepare_cluster_run_context
 from app_cluster_pipeline import (
     build_t5_source_text,
@@ -86,7 +85,7 @@ from app_cluster_pipeline import (
     postprocess_clusters,
     export_cluster_outputs,
 )
-from task_runner import ErrorEnvelope, OperationLifecycle, begin_long_task
+from task_runner import ErrorEnvelope, OperationLifecycle, begin_long_task, prepare_long_task_ui
 from app_logger import get_logger
 from ui_theme import BG, FG, ENTRY_BG, ACCENT, MUTED, BORDER
 
@@ -3244,21 +3243,22 @@ class ClusterTabMixin:
         self.log_cluster("==== CLUSTER START ====")
         t0 = time.time()
 
-        _ctrl = WorkflowProgressController(
-            self.cluster_progress, self.cluster_status, self.cluster_pct,
-            self.cluster_phase, self.cluster_speed, self.cluster_eta,
-        )
-
-        def ui_prog(pct: float, status: str):
-            _ctrl.update(pct, status)
-
-        _lifecycle = OperationLifecycle(
+        _task_ui = prepare_long_task_ui(
             owner=self,
+            progress_var=self.cluster_progress,
+            status_var=self.cluster_status,
+            pct_var=self.cluster_pct,
+            phase_var=self.cluster_phase,
+            speed_var=self.cluster_speed,
+            eta_var=self.cluster_eta,
             run_button=self.btn_cluster,
             run_button_idle_text="▶  Кластеризовать",
             stop_button=self.btn_cluster_stop,
             log_fn=self.log_cluster,
         )
+        _ctrl = _task_ui.controller
+        ui_prog = _task_ui.ui_prog
+        _lifecycle = _task_ui.lifecycle
 
         def worker():
             try:

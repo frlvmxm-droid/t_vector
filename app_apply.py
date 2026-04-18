@@ -41,9 +41,8 @@ from model_loader import ensure_trusted_model_path, load_model_artifact, get_tru
 from app_apply_service import EnsemblePredictor
 from apply_prediction_service import ApplyRunState
 from app_apply_view import build_apply_files_card
-from workflow_controller import WorkflowProgressController
 from app_apply_workflow import validate_apply_preconditions, build_validated_apply_snapshot
-from task_runner import ErrorEnvelope, OperationLifecycle, begin_long_task
+from task_runner import ErrorEnvelope, OperationLifecycle, begin_long_task, prepare_long_task_ui
 from ui_theme import BG, FG, PANEL2, ENTRY_BG, ACCENT, ACCENT3, MUTED, MUTED2, BORDER, SUCCESS
 from artifact_contracts import TRAIN_MODEL_ARTIFACT_TYPE
 from ui.tabs.apply_presenter import format_apply_autoprofile_log
@@ -1071,21 +1070,22 @@ class ApplyTabMixin:
 
         t0 = time.time()
 
-        _ctrl = WorkflowProgressController(
-            self.apply_progress, self.apply_status, self.apply_pct,
-            self.apply_phase, self.apply_speed, self.apply_eta,
-        )
-
-        def ui_prog(pct: float, status: str):
-            _ctrl.update(pct, status)
-
-        _lifecycle = OperationLifecycle(
+        _task_ui = prepare_long_task_ui(
             owner=self,
+            progress_var=self.apply_progress,
+            status_var=self.apply_status,
+            pct_var=self.apply_pct,
+            phase_var=self.apply_phase,
+            speed_var=self.apply_speed,
+            eta_var=self.apply_eta,
             run_button=self.btn_apply,
             run_button_idle_text="▶  Классифицировать",
             stop_button=self.btn_apply_stop,
             log_fn=self.log_apply,
         )
+        _ctrl = _task_ui.controller
+        ui_prog = _task_ui.ui_prog
+        _lifecycle = _task_ui.lifecycle
 
         def worker():
             try:

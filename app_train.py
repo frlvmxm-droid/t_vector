@@ -59,7 +59,7 @@ from app_train_service import TrainingWorkflow
 from app_train_view import build_train_files_card as _build_train_files_card_view
 from workflow_controller import WorkflowProgressController
 from app_train_workflow import validate_train_preconditions, build_validated_train_snapshot
-from task_runner import ErrorEnvelope, OperationLifecycle, begin_long_task
+from task_runner import ErrorEnvelope, OperationLifecycle, begin_long_task, prepare_long_task_ui
 from app_logger import get_logger
 from ui_theme import BG, FG, ENTRY_BG, ACCENT, ACCENT2, MUTED, MUTED2, BORDER, PANEL, SUCCESS, WARNING, ERROR, _best_font
 from ui_widgets import Tooltip, ToggleSwitch, RoundedCard, CollapsibleSection
@@ -3889,21 +3889,22 @@ class TrainTabMixin:
         xlsx_paths = [Path(p) for p in self.train_files]
         t0 = time.time()
         _t_phase = time.time()   # для фазовых тайминг
-        _ctrl = WorkflowProgressController(
-            self.train_progress, self.train_status, self.train_pct,
-            self.train_phase, self.train_speed, self.train_eta,
-        )
-
-        def ui_prog(pct: float, status: str):
-            _ctrl.update(pct, status)
-
-        _lifecycle = OperationLifecycle(
+        _task_ui = prepare_long_task_ui(
             owner=self,
+            progress_var=self.train_progress,
+            status_var=self.train_status,
+            pct_var=self.train_pct,
+            phase_var=self.train_phase,
+            speed_var=self.train_speed,
+            eta_var=self.train_eta,
             run_button=self.btn_train,
             run_button_idle_text="▶  Обучить / сохранить модель",
             stop_button=self.btn_train_stop,
             log_fn=self.log_train,
         )
+        _ctrl = _task_ui.controller
+        ui_prog = _task_ui.ui_prog
+        _lifecycle = _task_ui.lifecycle
 
         def worker():
             nonlocal snap
