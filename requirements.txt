@@ -68,3 +68,9 @@ matplotlib>=3.7         # scatter-плот для кластеризации в 
 
 # Active learning (ml_diagnostics.rank_for_active_learning):
 #   Использует только numpy — дополнительных пакетов не требует.
+
+# Fuzzy near-duplicate dedup (ml_training.fuzzy_string_dedup, Wave 4.1):
+#   pip install "rapidfuzz>=2.13"
+#   Если rapidfuzz не установлен — fuzzy_string_dedup прозрачно падает в
+#   точный strip+casefold дедуп (без token_sort_ratio). Сам train_model
+#   этого пакета не требует — включается флагом use_fuzzy_dedup=True.

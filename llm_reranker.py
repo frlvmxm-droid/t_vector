@@ -106,6 +106,7 @@ def rerank_top_k(
     class_examples: dict[str, Sequence[str]] | None = None,
     timeout_sec: float = 20.0,
     max_retries: int = 3,
+    temperature: float | None = 0.2,
     log_fn: Any | None = None,
 ) -> list[str]:
     """Для каждой строки отдельно просит LLM выбрать класс из top-K.
@@ -119,6 +120,9 @@ def rerank_top_k(
                         отсортированный по убыванию вероятности)
       argmax_labels   — fallback-метки (argmax-вывод модели)
       class_examples  — опционально: типичные примеры для каждого класса
+      temperature     — температура семплирования. 0.2 по умолчанию даёт
+                        детерминизм при сохранении гибкости; None — использовать
+                        дефолт провайдера.
     """
     if not (len(texts) == len(top_candidates) == len(argmax_labels)):
         raise ValueError("texts, top_candidates, argmax_labels must have equal length")
@@ -147,6 +151,7 @@ def rerank_top_k(
                 max_tokens=32,
                 timeout_sec=timeout_sec,
                 max_retries=max_retries,
+                temperature=temperature,
             )
             chosen = _parse_rerank_response(resp, cands_list, fallback=str(fb))
             out.append(chosen)

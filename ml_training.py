@@ -118,6 +118,68 @@ def _maybe_skip_validation(
     return pipe, clf_type, f"ВАЛИДАЦИЯ ПРОПУЩЕНА ({reason}).", None, None, {}
 
 
+def fuzzy_string_dedup(
+    X: List[str],
+    y: List[str],
+    *,
+    threshold: int = 92,
+    log_cb: Optional[Callable[[str], None]] = None,
+) -> Tuple[List[str], List[str], int]:
+    """Near-duplicate dedup в паре (X, y) по rapidfuzz.token_sort_ratio.
+
+    Группирует строки одного класса с similarity ≥ threshold, оставляя
+    по одному представителю на группу. Дубликаты разных классов не
+    трогаем — они диагностически полезны как сигнал неоднозначности
+    разметки. При отсутствии rapidfuzz — graceful fallback на exact
+    dedup (strip+casefold).
+
+    Returns: (X_dedup, y_dedup, n_removed).
+    """
+    if not X:
+        return list(X), list(y), 0
+    n0 = len(X)
+    try:
+        from rapidfuzz import fuzz  # type: ignore[import-not-found]
+    except ImportError:
+        seen: Dict[Tuple[str, str], bool] = {}
+        out_x: List[str] = []
+        out_y: List[str] = []
+        for x, yi in zip(X, y):
+            key = (str(x).strip().casefold(), str(yi))
+            if key in seen:
+                continue
+            seen[key] = True
+            out_x.append(x)
+            out_y.append(yi)
+        removed = n0 - len(out_x)
+        if removed and log_cb:
+            log_cb(f"[Dedup] Удалено точных дубликатов: {removed} (rapidfuzz недоступен)")
+        return out_x, out_y, removed
+
+    by_class: Dict[str, List[int]] = {}
+    for i, yi in enumerate(y):
+        by_class.setdefault(str(yi), []).append(i)
+
+    keep_mask = [True] * n0
+    for _cls, idxs in by_class.items():
+        normalized = [str(X[i]).strip().casefold() for i in idxs]
+        for a in range(len(idxs)):
+            if not keep_mask[idxs[a]]:
+                continue
+            for b in range(a + 1, len(idxs)):
+                if not keep_mask[idxs[b]]:
+                    continue
+                score = fuzz.token_sort_ratio(normalized[a], normalized[b])
+                if score >= threshold:
+                    keep_mask[idxs[b]] = False
+    out_x = [X[i] for i, keep in enumerate(keep_mask) if keep]
+    out_y = [y[i] for i, keep in enumerate(keep_mask) if keep]
+    removed = n0 - len(out_x)
+    if removed and log_cb:
+        log_cb(f"[Dedup] Near-duplicate'ов (rapidfuzz ≥{threshold}): {removed}")
+    return out_x, out_y, removed
+
+
 def _oversample_rare_classes(
     Xtr: List[str],
     ytr: List[str],
@@ -617,9 +679,20 @@ def _compute_validation_extras(
             _ece, _mce = _compute_ece_mce(proba, yva, classes)
             extras["ece"] = _ece
             extras["mce"] = _mce
+            _brier = _compute_brier_score(proba, yva, classes)
+            extras["brier"] = _brier
+            _pc_ece = _compute_per_class_ece(proba, yva, classes)
+            extras["per_class_ece"] = _pc_ece
             if log_cb:
                 _cal_q = "хорошо" if _ece < 0.05 else ("удовл." if _ece < 0.10 else "плохо")
-                log_cb(f"[Калибровка] ECE={_ece:.4f}  MCE={_mce:.4f}  ({_cal_q})")
+                log_cb(
+                    f"[Калибровка] ECE={_ece:.4f}  MCE={_mce:.4f}  "
+                    f"Brier={_brier:.4f}  ({_cal_q})"
+                )
+                if _pc_ece:
+                    _worst = sorted(_pc_ece.items(), key=lambda kv: kv[1], reverse=True)[:3]
+                    _lines = ", ".join(f"«{c}»={v:.3f}" for c, v in _worst)
+                    log_cb(f"[Калибровка] Худшие per-class ECE: {_lines}")
         except Exception as _te:
             _log.debug("temperature scaling failed: %s", _te)
 
@@ -693,6 +766,66 @@ def _compute_ece_mce(
     except Exception as _ece_exc:
         _log.debug("ECE/MCE computation failed: %s", _ece_exc)
         return 0.0, 0.0
+
+
+def _compute_brier_score(
+    proba: np.ndarray,
+    yva: List[str],
+    classes: List[str],
+) -> float:
+    """Multi-class Brier Score (mean squared error против one-hot правды).
+
+    Brier = (1/N) · Σ_i Σ_k (p_ik − y_ik)².
+    Чем ниже, тем лучше. Для калиброванного бинарного классификатора идеал ≈ 0.
+    """
+    try:
+        class_to_idx = {c: i for i, c in enumerate(classes)}
+        n, k = proba.shape
+        one_hot = np.zeros_like(proba)
+        for i, yi in enumerate(yva):
+            j = class_to_idx.get(str(yi))
+            if j is not None:
+                one_hot[i, j] = 1.0
+        diff = proba - one_hot
+        return float(np.mean(np.sum(diff * diff, axis=1)))
+    except Exception as _bs_exc:
+        _log.debug("Brier computation failed: %s", _bs_exc)
+        return 0.0
+
+
+def _compute_per_class_ece(
+    proba: np.ndarray,
+    yva: List[str],
+    classes: List[str],
+    n_bins: int = 10,
+) -> Dict[str, float]:
+    """Per-class ECE: один-против-всех binning вероятности класса c."""
+    try:
+        class_to_idx = {c: i for i, c in enumerate(classes)}
+        y_idx = np.array([class_to_idx.get(str(yi), -1) for yi in yva])
+        n_bins = max(3, min(n_bins, len(proba) // 20))
+        bin_edges = np.linspace(0.0, 1.0, n_bins + 1)
+        out: Dict[str, float] = {}
+        for j, cls in enumerate(classes):
+            conf_j = proba[:, j]
+            correct_j = (y_idx == j).astype(float)
+            n = len(conf_j)
+            if n == 0:
+                out[str(cls)] = 0.0
+                continue
+            ece_j = 0.0
+            for lo, hi in zip(bin_edges[:-1], bin_edges[1:]):
+                mask = (conf_j >= lo) & (conf_j < hi)
+                if not mask.any():
+                    continue
+                bin_acc = correct_j[mask].mean()
+                bin_conf = conf_j[mask].mean()
+                ece_j += mask.sum() / n * abs(bin_acc - bin_conf)
+            out[str(cls)] = float(ece_j)
+        return out
+    except Exception as _pc_exc:
+        _log.debug("per-class ECE failed: %s", _pc_exc)
+        return {}
 
 
 def compute_temperature_scaling(
@@ -813,6 +946,8 @@ def train_model(
     field_dropout_copies: int = 2,
     use_label_smoothing: bool = False,
     label_smoothing_eps: float = 0.05,
+    use_fuzzy_dedup: bool = False,
+    fuzzy_dedup_threshold: int = 92,
 ) -> Tuple[Pipeline, str, str, Optional[List[str]], Optional[Any], Dict]:
     """
     Обучает Pipeline(features → classifier).
@@ -871,6 +1006,13 @@ def train_model(
     )
     if log_cb:
         log_cb(f"[Обучение] Разбивка: обучение={len(Xtr)}, валидация={len(Xva)} (test_size={test_size})")
+
+    if use_fuzzy_dedup:
+        Xtr, ytr, _n_dedup = fuzzy_string_dedup(
+            Xtr, ytr, threshold=int(fuzzy_dedup_threshold), log_cb=log_cb,
+        )
+        if _n_dedup and log_cb:
+            log_cb(f"[Обучение] После fuzzy-dedup: обучение={len(Xtr)}")
 
     if use_smote:
         Xtr, ytr = _oversample_rare_classes(
