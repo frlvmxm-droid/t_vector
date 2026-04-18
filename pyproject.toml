@@ -1,0 +1,33 @@
+[project]
+name = "classification-tool"
+version = "9.0.0"
+description = "BankReasonTrainer — классификатор причин обращений"
+requires-python = ">=3.11,<3.14"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP"]
+ignore = [
+    "E501",   # длинные строки в UI и tooltip-текстах — допустимы
+    "E741",   # ambiguous variable names (l, O, I) — встречаются в ML-коде
+    "UP007",  # Optional[X] vs X | None — оставляем совместимость с 3.9
+]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+strict = false
+warn_unused_ignores = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "--tb=short -q"
+
+[tool.pip-compile]
+output-file = "requirements.lock"

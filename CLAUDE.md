@@ -1,0 +1,226 @@
+# CLAUDE.md — Developer Guide
+
+BankReasonTrainer is a desktop Tkinter app for classifying Russian bank dialog texts into reason-of-contact categories. It supports training (TF-IDF/SBERT/SetFit), batch prediction, and unsupervised clustering with optional LLM-powered naming.
+
+---
+
+## Quick Start
+
+```bash
+# Install deps + launch app
+python bootstrap_run.py        # cross-platform (Windows/Linux/macOS)
+
+# Or directly:
+python app.py
+```
+
+Shell shortcuts: `run.sh` (Linux/macOS), `run_app.bat` (Windows).
+
+---
+
+## Running Tests
+
+```bash
+# All tests via pytest (recommended)
+PYTHONPATH=. pytest -q
+
+# Specific suites
+PYTHONPATH=. pytest tests/test_e2e_train_predict.py -v    # E2E train → predict
+PYTHONPATH=. pytest tests/test_e2e_excel.py -v            # Excel round-trip
+PYTHONPATH=. pytest tests/test_workflow_contracts.py -v   # Pydantic contracts
+PYTHONPATH=. pytest tests/test_all_compat.py -v           # 143 unit tests from test_all.py
+
+# Legacy custom runner (prints PASS/FAIL summary)
+python test_all.py
+```
+
+Requirements for E2E tests: `scikit-learn numpy scipy joblib openpyxl` (core deps, always installed).
+
+---
+
+## Module Map
+
+### Entry Points
+| File | Role |
+|------|------|
+| `app.py` | Main `App` class — tkinter root, state, session save/restore |
+| `app_train.py` | `TrainTabMixin` — training UI + ML orchestration |
+| `app_apply.py` | `ApplyTabMixin` — batch prediction UI |
+| `app_cluster.py` | `ClusterTabMixin` — clustering UI (2 035-line `run_cluster()`) |
+| `bootstrap_run.py` | Entry point: checks Python ≥3.9, installs deps, launches |
+
+### Service Layer (no tkinter, testable in isolation)
+| File | Role |
+|------|------|
+| `app_train_service.py` | `TrainingWorkflow` — thin wrapper over `train_model()` |
+| `apply_prediction_service.py` | `predict_with_thresholds()`, `validate_apply_bundle()` |
+| `cluster_workflow_service.py` | `ClusteringWorkflow.run()` — orchestrates 4 pipeline stages |
+| `app_cluster_pipeline.py` | Pure pipeline functions: `prepare_inputs`, `build_vectors`, `run_clustering`, `postprocess_clusters`, `export_cluster_outputs` |
+
+### ML Core
+| File | Role |
+|------|------|
+| `ml_training.py` | `train_model()` — LinearSVC + CalibratedClassifierCV, SMOTE, nn_mix, label smoothing |
+| `ml_vectorizers.py` | `make_hybrid_vectorizer()` — TF-IDF (char+word), PerFieldVectorizer, Lemmatizer (pymorphy3→pymorphy2), SBERT, DeBERTa, MetaFeatureExtractor |
+| `ml_setfit.py` | `SetFitClassifier` — sklearn-compatible few-shot classifier via HuggingFace SetFit |
+| `ml_diagnostics.py` | `rank_for_active_learning()`, `find_cluster_representative_texts()`, `merge_similar_clusters()` |
+| `ml_distillation.py` | `distill_soft_labels()` — teacher→student knowledge distillation |
+| `ml_mlm_pretrain.py` | `pretrain_mlm()` — domain MLM pretraining via HuggingFace Trainer |
+| `llm_reranker.py` | `rerank_top_k()` — LLM-based re-ranking of low-confidence predictions |
+
+### Infrastructure
+| File | Role |
+|------|------|
+| `llm_client.py` | LLM provider client (Anthropic, OpenAI, Qwen, GigaChat, Ollama) — retry, circuit-breaker, cache |
+| `model_loader.py` | Safe `.joblib` loading with SHA-256 trust-check + `TrustStore` |
+| `artifact_contracts.py` | TypedDict schemas + `validate_bundle_schema()` |
+| `workflow_contracts.py` | Pydantic pre/post-condition contracts for train/apply/cluster |
+| `experiment_log.py` | Append-only JSONL experiment history (`~/.classification_tool/experiments.jsonl`) |
+| `entity_normalizer.py` | Regex rules: Russian bank names → `[БАНК]`, products → `[ПРОДУКТ]` |
+| `excel_utils.py` | Streaming XLSX/CSV reader (`open_tabular`), header detection, row counting |
+
+---
+
+## Adding a New Vectorizer
+
+Implement the sklearn transformer interface and integrate via `make_hybrid_vectorizer()`:
+
+```python
+# ml_vectorizers.py — template based on MetaFeatureExtractor
+class MyVectorizer(BaseEstimator, TransformerMixin):
+    def fit(self, X: List[str], y=None) -> "MyVectorizer":
+        return self
+
+    def transform(self, X: List[str]) -> np.ndarray:
+        return np.array([self._featurize(text) for text in X])
+
+    def _featurize(self, text: str) -> List[float]:
+        ...
+```
+
+Then add it to the `FeatureUnion` in `make_hybrid_vectorizer()` (line ~1800).
+
+---
+
+## Model Bundle Format
+
+Saved with `joblib.dump(bundle, path, compress=3)`. Key fields:
+
+```python
+bundle = {
+    "artifact_type":        "train_model_bundle",   # validated on load
+    "schema_version":       1,
+    "pipeline":             sklearn.Pipeline,        # features → clf
+    "config":               dict,                    # UI snapshot used for training
+    "per_class_thresholds": dict[str, float],        # PR-curve thresholds
+    "eval_metrics": {
+        "macro_f1":    float,
+        "accuracy":    float,
+        "n_train":     int,
+        "n_test":      int,
+        "per_class_f1": dict[str, float],
+        "trained_at":  str,                          # ISO 8601
+    },
+    "class_examples":       dict[str, list[str]],   # for LLM re-ranker
+}
+```
+
+---
+
+## Key Directories
+
+```
+.
+├── app.py, app_train.py, app_apply.py, app_cluster.py  # UI mixins
+├── ml_*.py                  # ML modules (no tkinter)
+├── tests/                   # pytest test suite
+│   ├── test_e2e_*.py        # E2E integration tests
+│   ├── test_all_compat.py   # pytest wrapper for test_all.py
+│   └── test_*.py            # unit / contract tests
+├── config/                  # user_config.py (defaults, SBERT model names)
+├── tools/                   # perf_smoke.py, CI utilities
+├── .github/workflows/       # CI: quality-gates, nightly-perf, weekly-scan
+├── requirements.txt         # core deps with version ranges
+├── pyproject.toml           # ruff / mypy / pytest config
+└── bank_reason_trainer.spec # PyInstaller build spec
+```
+
+---
+
+## Building a Distributable
+
+```bash
+pip install pyinstaller
+pyinstaller bank_reason_trainer.spec --clean
+# Output: dist/BankReasonTrainer/
+```
+
+---
+
+## CI Pipelines
+
+| Workflow | Trigger | What runs |
+|----------|---------|-----------|
+| `quality-gates.yml` | PR + push to main | ruff, mypy, bandit, pytest (contracts + E2E) |
+| `nightly-perf.yml` | 3 AM daily | hashing perf gates, cluster smoke |
+| `weekly-quality-scan.yml` | Weekly | extended quality checks |
+
+---
+
+## Keyboard Shortcuts
+
+| Shortcut | Action |
+|----------|--------|
+| `F5` | Run current tab operation (Train / Apply / Cluster) |
+| `Ctrl+Return` | Same as F5 |
+| `Ctrl+1` | Switch to Train tab |
+| `Ctrl+2` | Switch to Apply tab |
+| `Ctrl+3` | Switch to Cluster tab |
+| `Ctrl++` / `Ctrl+-` | Increase / decrease font size |
+
+---
+
+## Security Setup
+
+### LLM API Key Encryption
+
+API keys stored in session snapshots are encrypted with Fernet (symmetric AES-128).
+The encryption key is read from the `LLM_SNAPSHOT_KEY` environment variable.
+
+**Generating a new Fernet key:**
+```python
+from cryptography.fernet import Fernet
+key = Fernet.generate_key()
+print(key.decode())   # copy this value
+```
+
+Set the key before launching the app:
+```bash
+# Linux / macOS
+export LLM_SNAPSHOT_KEY="<paste-key-here>"
+python app.py
+
+# Windows (PowerShell)
+$env:LLM_SNAPSHOT_KEY = "<paste-key-here>"
+python app.py
+```
+
+**Recommended**: store the key in your OS keychain rather than in a shell profile:
+- **macOS**: `security add-generic-password -s BankReasonTrainer -a LLM_SNAPSHOT_KEY -w <key>`
+- **Linux**: use `secret-tool` (libsecret) or `pass`
+- **Windows**: use `Windows Credential Manager` via the `keyring` Python package
+
+### Model Trust Store
+
+`.joblib` model files are only loaded after SHA-256 hash verification (`model_loader.TrustStore`).
+Trust entries are cached in memory for the session; they are re-verified on the next launch.
+
+---
+
+## Architecture Notes
+
+- **Session state**: `app.py._snap_params()` serializes all `tk.Var` → dict. `_restore_session()` / `_save_session()` persist to `~/.classification_tool/last_session.json`.
+- **Security**: `.joblib` files are only loaded after SHA-256 trust-check (`model_loader.TrustStore`). API keys are encrypted in runtime snapshots (`llm_key_store.py`).
+- **Cluster pipeline stages**: `run_cluster()` in `app_cluster.py` is organized in 4 explicit stages (СТАДИЯ 1–4 banners). `ClusterRunState` dataclass captures all cross-stage variables for future extraction into separate methods.
+- **Calibration metrics**: After temperature scaling, ECE/MCE are computed and logged. `training_duration_sec` and `model_size_bytes` are stored in each experiment record (`~/.classification_tool/experiments.jsonl`).
+- **Graceful degradation**: App works without SBERT, torch, LLM, pymorphy — each optional dep is guarded with `try/except ImportError`.
