@@ -103,6 +103,65 @@ class LLMClient:
         with cls._stats_lock:
             cls._cache_stats[key] = int(cls._cache_stats.get(key, 0)) + int(delta)
 
+    # ------------------------------------------------------------------
+    # Offline provider (ADR-0004) — deterministic CI-side stub
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _offline_enabled() -> bool:
+        """True iff env BRT_LLM_PROVIDER is set and lower-cases to 'offline'."""
+        val = (os.environ.get("BRT_LLM_PROVIDER") or "").strip().lower()
+        return val == "offline"
+
+    @classmethod
+    def _offline_complete(
+        cls,
+        provider: str,
+        model: str,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int,
+        temperature: float | None,
+    ) -> str:
+        """Deterministic stub.
+
+        Resolution order:
+          1. JSONL replay file at path from env BRT_LLM_REPLAY. Each line:
+             {"key": "<sha256>", "response": "..."}. Match by cache-key.
+          2. First "• <candidate>" bullet from user_prompt — the `rerank_top_k`
+             prompt format (see llm_reranker._build_rerank_user).
+          3. Empty string.
+
+        Never performs network I/O, raises, or mutates the circuit-breaker.
+        """
+        key = cls._cache_key(
+            provider, model, system_prompt, user_prompt, max_tokens, temperature,
+        )
+        replay_path = (os.environ.get("BRT_LLM_REPLAY") or "").strip()
+        if replay_path and os.path.isfile(replay_path):
+            try:
+                with open(replay_path, "r", encoding="utf-8") as fh:
+                    for line in fh:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            rec = json.loads(line)
+                        except JSONDecodeError:
+                            continue
+                        if str(rec.get("key")) == key:
+                            return str(rec.get("response") or "")
+            except OSError:
+                pass
+
+        # Fallback 2: echo the first rerank candidate to make rerank_top_k
+        # behave identically to "keep argmax" without LLM side-effects.
+        for raw in (user_prompt or "").splitlines():
+            s = raw.strip()
+            if s.startswith("•"):
+                return s.lstrip("•").strip()
+        return ""
+
     @classmethod
     def _cache_key(
         cls,
@@ -540,7 +599,18 @@ class LLMClient:
         вариативность). Фиксированное значение (напр. 0.2) даёт детерминированные
         ответы для задач с одним правильным результатом — нейминг кластеров,
         классификация, резюмирование.
+
+        Offline режим (ADR-0004): env BRT_LLM_PROVIDER=offline коротит
+        реальную сеть, отдавая детерминированный ответ. Если в CI указан
+        replay-файл BRT_LLM_REPLAY (JSONL), ответ ищется по cache-key;
+        иначе возвращается первый кандидат из user_prompt (для reranker)
+        либо пустая строка.
         """
+        if LLMClient._offline_enabled():
+            return LLMClient._offline_complete(
+                provider, model, system_prompt, user_prompt, max_tokens, temperature,
+            )
+
         p = (provider or "").strip().lower()
 
         resolved_api_key = LLMClient._decrypt_and_resolve_key(provider, api_key)

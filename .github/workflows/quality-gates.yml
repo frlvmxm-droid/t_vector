@@ -50,8 +50,17 @@ jobs:
           # follow_imports=silent keeps strict scope to the gated modules;
           # imports into legacy code are type-checked shallowly so cascade
           # errors in ml_vectorizers/ml_diagnostics don't block the gate.
+          # Wave 5 target: ≥25 modules. Extend as each becomes clean.
           mypy --strict --ignore-missing-imports --follow-imports=silent \
-            ml_core.py ml_compat.py workflow_contracts.py artifact_contracts.py
+            ml_core.py ml_compat.py workflow_contracts.py artifact_contracts.py \
+            llm_reranker.py cluster_workflow_service.py \
+            app_train_service.py bank_reason_trainer/cli.py
+
+      - name: Ruff BLE (warn-only — broad-except audit, Wave 5)
+        run: |
+          # BLE001 = bare `except Exception`. 251 sites today; target ≤35.
+          # Warn-only until audit in Wave 5; flip to blocking once narrowed.
+          ruff check --select=BLE --output-format=concise . || true
 
   security:
     name: Security scan (bandit)
@@ -99,12 +108,13 @@ jobs:
       - name: Run tests with coverage
         env:
           PYTHONPATH: .
+          BRT_LLM_PROVIDER: offline   # ADR-0004: deterministic LLM in CI
         run: |
-          # --cov-fail-under=45 is a regression-prevention floor, not a target.
-          # Current coverage is ~49%; ratchet this value upward as Phase B
-          # adds service-layer tests (goal: 75%).
-          pytest --cov=. --cov-report=xml --cov-report=term \
-            --cov-fail-under=45 \
+          # Ratchet: 45 → 50 (branch). Wave 5 target 70 %. `.coveragerc`
+          # omits UI/view layers exercised only through Tk.
+          pytest --cov-config=.coveragerc \
+            --cov-report=xml --cov-report=term \
+            --cov-branch --cov-fail-under=50 \
             --ignore=tests/test_heavy_modules.py \
             -q
 

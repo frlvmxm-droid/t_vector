@@ -1,0 +1,35 @@
+[run]
+branch = True
+source = .
+omit =
+    tests/*
+    */__pycache__/*
+    build/*
+    dist/*
+    setup.py
+    setup_env.py
+    bootstrap_run.py
+    bootstrap_ctk.py
+    download_sbert_models.py
+    ctk_migration_pack/*
+    # UI/view layers — deliberately exercised only through integration tests
+    app_*_view_ctk.py
+    ui_widgets.py
+    ui_theme.py
+    ui_theme_ctk.py
+    app_dialogs_ctk.py
+    experiment_history_dialog.py
+
+[report]
+exclude_also =
+    # Defensive import-guards are exercised only when deps missing
+    except ImportError.*:
+    pragma: no cover
+    if TYPE_CHECKING:
+    if __name__ == .__main__.:
+    raise NotImplementedError
+    \.\.\.$
+fail_under = 50
+precision = 2
+show_missing = True
+skip_covered = True

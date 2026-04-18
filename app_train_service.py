@@ -7,7 +7,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import joblib
 from sklearn.pipeline import Pipeline
 
-from ml_core import train_model
+from ml_training import train_model
 
 
 class TrainingWorkflow:

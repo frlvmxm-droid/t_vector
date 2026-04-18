@@ -30,13 +30,18 @@ warn_unused_ignores = true
 
 # Постепенное включение strict-mypy по модулям.
 # Начинаем с «ядра контрактов» + изолированных ML-утилит, не тянущих за собой
-# тяжёлые импорты. Расширяем постепенно (см. CLAUDE.md).
+# тяжёлые импорты. Расширяем постепенно (см. CLAUDE.md). Wave 5 target: ≥25.
 [[tool.mypy.overrides]]
 module = [
     "workflow_contracts",
     "artifact_contracts",
     "ml_compat",
     "ml_core",
+    "llm_reranker",
+    "cluster_workflow_service",
+    "app_train_service",
+    "bank_reason_trainer.cli",
+    "bank_reason_trainer.__init__",
 ]
 strict = true
 follow_imports = "silent"
@@ -62,7 +67,15 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+# Coverage is gated in CI only (quality-gates.yml) with --cov=. --cov-branch
+# --cov-fail-under=50. Local runs stay fast (coverage ≈5-10× overhead with
+# branch tracking). See docs/adr/0006-mutation-testing.md.
 addopts = "--tb=short -q"
+markers = [
+    "unit: fast unit tests",
+    "integration: integration tests with multiple modules",
+    "slow: long-running tests",
+]
 
 [tool.pip-compile]
 output-file = "requirements.lock"
