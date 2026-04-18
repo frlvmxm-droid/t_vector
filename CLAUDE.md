@@ -16,6 +16,16 @@ python app.py
 
 Shell shortcuts: `run.sh` (Linux/macOS), `run_app.bat` (Windows).
 
+### Headless CLI (no tkinter)
+
+```bash
+python -m bank_reason_trainer cluster --files a.xlsx b.xlsx --snap snap.json
+python -m bank_reason_trainer train   --data train.xlsx --out model.joblib --allow-skeleton
+python -m bank_reason_trainer apply   --model model.joblib --data in.xlsx --out out.xlsx --allow-skeleton
+```
+
+`train`/`apply` are skeletons today; see `docs/adr/0002-pipeline-stages-and-snapshots.md`.
+
 ---
 
 ## Running Tests
