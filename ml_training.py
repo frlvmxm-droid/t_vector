@@ -456,7 +456,7 @@ def detect_mislabeled_examples(
 
     try:
         proba = pipe.predict_proba(X)
-    except Exception as _proba_exc:
+    except (AttributeError, ValueError, RuntimeError) as _proba_exc:
         _log.warning("predict_proba failed in ROC-AUC section: %s", _proba_exc)
         return []
 
@@ -579,7 +579,7 @@ def _compute_validation_extras(
             extras["roc_auc_macro"] = float(_roc)
             if log_cb:
                 log_cb(f"[Валидация] ROC-AUC macro={float(_roc):.3f}")
-        except Exception as _roc_exc:
+        except (ValueError, AttributeError, ImportError) as _roc_exc:
             if log_cb:
                 log_cb(f"[Валидация] ROC-AUC недоступен: {type(_roc_exc).__name__}: {_roc_exc}")
 

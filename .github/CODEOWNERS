@@ -1,0 +1,26 @@
+# Ownership map for review routing.
+# Syntax: <path-glob> <github-handle> [<github-handle> ...]
+# Last-matching rule wins.
+
+# Default fallback — anything not claimed below routes to the repo owner.
+*                                   @frlvmxm-droid
+
+# CI, security, and repo-level config require repo-owner review.
+/.github/                           @frlvmxm-droid
+/SECURITY.md                        @frlvmxm-droid
+/CONTRIBUTING.md                    @frlvmxm-droid
+/CODEOWNERS                         @frlvmxm-droid
+/pyproject.toml                     @frlvmxm-droid
+/requirements.txt                   @frlvmxm-droid
+
+# Security-critical modules — changes need careful review.
+/model_loader.py                    @frlvmxm-droid
+/llm_client.py                      @frlvmxm-droid
+/llm_key_store.py                   @frlvmxm-droid
+/llm_reranker.py                    @frlvmxm-droid
+/entity_normalizer.py               @frlvmxm-droid
+/excel_utils.py                     @frlvmxm-droid
+
+# Contracts — schema changes propagate to artifacts on disk.
+/artifact_contracts.py              @frlvmxm-droid
+/workflow_contracts.py              @frlvmxm-droid
