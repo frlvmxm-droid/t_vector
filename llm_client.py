@@ -140,7 +140,7 @@ class LLMClient:
         replay_path = (os.environ.get("BRT_LLM_REPLAY") or "").strip()
         if replay_path and os.path.isfile(replay_path):
             try:
-                with open(replay_path, "r", encoding="utf-8") as fh:
+                with open(replay_path, encoding="utf-8") as fh:
                     for line in fh:
                         line = line.strip()
                         if not line:
