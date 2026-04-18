@@ -65,6 +65,37 @@ def is_safe_path(base_dir: Path, target_path: Path) -> bool:
         return False
 
 
+def is_safe_path_strict(base_dir: Path, target_path: Path) -> bool:
+    """Stricter variant: rejects any path containing a symlink component.
+
+    Mitigates TOCTOU attacks where a symlink can be swapped between the
+    resolve() call and the subsequent file open. Walks the target's
+    ancestor chain; if ANY component is a symlink, the path is refused.
+    The final resolved path must still lie within ``base_dir``.
+
+    Use this for high-trust operations (e.g. joblib trust-store loads);
+    `is_safe_path` remains for plain boundary checks.
+    """
+    try:
+        resolved_base = base_dir.resolve()
+        # Refuse if any component on the way to the target is a symlink.
+        current = target_path
+        # Walk the user-supplied path (not the resolved one) to detect
+        # a symlink swap that happens BEFORE resolution.
+        while True:
+            if current.is_symlink():
+                return False
+            parent = current.parent
+            if parent == current:
+                break
+            current = parent
+        resolved_target = target_path.resolve()
+        resolved_target.relative_to(resolved_base)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
 class TrustStore:
     """Изолированное хранилище доверенных путей моделей.
 

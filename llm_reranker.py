@@ -106,7 +106,7 @@ def rerank_top_k(
     api_key: str,
     class_examples: Optional[Dict[str, Sequence[str]]] = None,
     timeout_sec: float = 20.0,
-    max_retries: int = 1,
+    max_retries: int = 3,
     log_fn: Optional[Any] = None,
 ) -> List[str]:
     """Для каждой строки отдельно просит LLM выбрать класс из top-K.

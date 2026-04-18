@@ -15,7 +15,7 @@ from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from ipaddress import ip_address
 from json import JSONDecodeError
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
 from app_logger import get_logger
@@ -205,6 +205,45 @@ class LLMClient:
                 state["opened_until"] = datetime.now(timezone.utc) + timedelta(seconds=_CIRCUIT_BREAKER_RESET_SEC)
             cls._circuit_state[p] = state
 
+    @staticmethod
+    def _parse_retry_after(headers: Any) -> Optional[float]:
+        """Parse RFC 7231 Retry-After header: delta-seconds or HTTP-date.
+
+        Returns the wait in seconds, or None if absent/unparseable.
+        Clamped to non-negative values; capped upstream to avoid
+        adversarial huge values.
+        """
+        if headers is None:
+            return None
+        raw = None
+        try:
+            raw = headers.get("Retry-After") or headers.get("retry-after")
+        except AttributeError:
+            return None
+        if raw is None:
+            return None
+        raw_s = str(raw).strip()
+        if not raw_s:
+            return None
+        # Case 1: integer delta-seconds
+        try:
+            secs = float(raw_s)
+            return max(0.0, secs)
+        except ValueError:
+            pass
+        # Case 2: HTTP-date (RFC 7231 IMF-fixdate)
+        try:
+            from email.utils import parsedate_to_datetime as _pdt
+            dt = _pdt(raw_s)
+            if dt is None:
+                return None
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            delta = (dt - datetime.now(timezone.utc)).total_seconds()
+            return max(0.0, delta)
+        except (TypeError, ValueError):
+            return None
+
     # ------------------------------------------------------------------
     # Приватные методы-помощники для complete_text
     # ------------------------------------------------------------------
@@ -362,11 +401,25 @@ class LLMClient:
                 _body = e.read().decode("utf-8", errors="replace") if hasattr(e, "read") else str(e)
                 _is_retryable = e.code in retryable_http and attempt_idx < attempts - 1
                 if _is_retryable:
-                    _sleep = backoff_base_sec * (2 ** attempt_idx) + random.uniform(0.0, backoff_jitter_sec)
-                    _log.warning(
-                        "llm retryable http error: provider=%s code=%s attempt=%s/%s sleep=%.2fs",
-                        provider, e.code, attempt_idx + 1, attempts, _sleep,
+                    # Prefer server-advised backoff (RFC 7231 §7.1.3) when present:
+                    # Retry-After may be either delta-seconds or HTTP-date.
+                    _retry_after = LLMClient._parse_retry_after(
+                        getattr(e, "headers", None)
                     )
+                    if _retry_after is not None:
+                        _sleep = min(float(_retry_after), 60.0) + random.uniform(
+                            0.0, backoff_jitter_sec
+                        )
+                        _log.warning(
+                            "llm retry-after honored: provider=%s code=%s attempt=%s/%s retry_after=%.2fs",
+                            provider, e.code, attempt_idx + 1, attempts, _sleep,
+                        )
+                    else:
+                        _sleep = backoff_base_sec * (2 ** attempt_idx) + random.uniform(0.0, backoff_jitter_sec)
+                        _log.warning(
+                            "llm retryable http error: provider=%s code=%s attempt=%s/%s sleep=%.2fs",
+                            provider, e.code, attempt_idx + 1, attempts, _sleep,
+                        )
                     time.sleep(_sleep)
                     continue
                 if e.code in retryable_http:
