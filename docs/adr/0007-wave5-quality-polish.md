@@ -191,7 +191,19 @@ the slice and points to ADR-0002.
   is the new E2E baseline (10-row CSV → k=2 → output CSV with cluster
   ids). `tests/test_cluster_pipeline_smoke.py` retargeted from "all
   stages raise" to "unsupported combos raise" — the slice is now the
-  positive case. 1550 passed / 18 skipped.
+  positive case.
+* **Slice extension (Wave 3a.1):** `cluster_algo` set expanded from
+  `{"kmeans"}` to `{"kmeans", "agglo"}`. Agglo uses sklearn's
+  `AgglomerativeClustering(linkage="ward")` with a 5 000-row hard cap
+  (Ward is O(n²) in memory); kmeans keeps the sparse matrix, agglo
+  densifies via `.toarray()`. Same validation / postprocess / export
+  paths — the dispatch is a single `if/elif` inside `run_clustering`.
+  No new deps (sklearn ships AgglomerativeClustering). +1 E2E test
+  (`test_cluster_agglo_combo_runs_full_pipeline`). 1551 passed / 18
+  skipped.
+* **Coverage gate ratcheted 72 → 73** after the slice port pushed
+  measured coverage from 73.15 % to 74.42 % (margin 1.42 pt, same
+  philosophy as the Wave 6.5 bump).
 
 ### Wave 7 (full run_cluster decomposition) — still deferred
 Investigation in this wave confirmed Wave 7.2/7.3 (extract stages 2–3

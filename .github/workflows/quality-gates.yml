@@ -187,11 +187,11 @@ jobs:
           # deprecated re-export шимы и тяжёлые HF-зависимые модули
           # (t5_summarizer, ml_mlm_pretrain, app_deps) вынесены в
           # `.coveragerc` omit; текущее достижимое покрытие на тестируемом
-          # ядре ≈73 % после Wave 6.5 (calibration / SetFit / LLM rerank
-          # fallback тестов).
+          # ядре ≈74 % после Wave 3a slice-port (app_cluster_pipeline
+          # stages 2–5 tested end-to-end).
           pytest --cov=. --cov-config=.coveragerc \
             --cov-report=xml --cov-report=term \
-            --cov-branch --cov-fail-under=72 \
+            --cov-branch --cov-fail-under=73 \
             --ignore=tests/test_heavy_modules.py \
             -q
 

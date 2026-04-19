@@ -49,11 +49,13 @@ python -m bank_reason_trainer apply \
     --model model.joblib --data in.xlsx --out out.xlsx \
     --text-col text [--threshold 0.5]
 
-# Cluster: TF-IDF + MiniBatchKMeans (Wave 3a slice — real end-to-end)
+# Cluster: TF-IDF + MiniBatchKMeans or AgglomerativeClustering
+# (Wave 3a slice — real end-to-end)
 python -m bank_reason_trainer cluster --files a.xlsx b.xlsx \
     --out clusters.csv --text-col text --k-clusters 8
+# Pick algo via snap: {"cluster_vec_mode": "tfidf", "cluster_algo": "agglo"}
 
-# Cluster: other combos (sbert/setfit/hdbscan/agglo/lda) still need
+# Cluster: other combos (sbert/setfit/hdbscan/lda) still need
 # --allow-skeleton; only prepare_inputs runs, the rest live inside
 # the Tk-bound app_cluster.run_cluster() until they are ported.
 python -m bank_reason_trainer cluster --files a.xlsx b.xlsx \
@@ -61,13 +63,14 @@ python -m bank_reason_trainer cluster --files a.xlsx b.xlsx \
 ```
 
 `train` and `apply` are real (Wave 8.3): TF-IDF features, joblib bundle
-round-trip, CSV/XLSX I/O. `cluster`'s default combo (`tfidf` + `kmeans`)
-is real end-to-end after the Wave 3a slice port — it streams text from
-`--files`, fits a TF-IDF vectorizer + MiniBatchKMeans, and writes
-`text,cluster_id,top_keywords` to `--out`. Combos outside the slice
-(SBERT, SetFit, HDBSCAN, agglomerative, LDA) still raise
-`NotImplementedError` and require `--allow-skeleton` for the prepare-only
-fallback — see `docs/adr/0002-pipeline-stages-and-snapshots.md` and
+round-trip, CSV/XLSX I/O. `cluster`'s `tfidf` + `kmeans|agglo` combos are
+real end-to-end after the Wave 3a slice port — they stream text from
+`--files`, fit a TF-IDF vectorizer + the chosen clusterer, and write
+`text,cluster_id,top_keywords` to `--out`. Agglomerative is capped at
+5 000 rows (Ward linkage is O(n²) in memory). Other combos (SBERT,
+SetFit, HDBSCAN, LDA, BERTopic) still raise `NotImplementedError` and
+require `--allow-skeleton` for the prepare-only fallback — see
+`docs/adr/0002-pipeline-stages-and-snapshots.md` and
 `docs/adr/0007-wave5-quality-polish.md`.
 
 ---

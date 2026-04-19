@@ -108,7 +108,7 @@ def _as_cluster_snapshot(snap: Mapping[str, object]) -> ClusterSnapshot:
 
 def build_cluster_role_context(snap: Mapping[str, object]) -> ClusterRoleContext:
     """Готовит role-specific snapshot для этапа подготовки входных текстов."""
-    allowed_algos = {"kmeans", "hdbscan", "bertopic", "lda", "fastopic"}
+    allowed_algos = {"kmeans", "agglo", "hdbscan", "bertopic", "lda", "fastopic"}
     allowed_vec_modes = {"tfidf", "sbert", "combo", "ensemble"}
     raw_algo = snap.get("cluster_algo", "kmeans")
     raw_vec_mode = snap.get("cluster_vec_mode", "tfidf")
@@ -221,15 +221,17 @@ def prepare_inputs(files_snapshot: List[str], snap: Mapping[str, object]) -> Pre
 
 
 _STAGES_NOT_PORTED_MSG = (
-    "Pipeline combo {combo!r} is not yet ported. Wave 3a slice ships only "
-    "vec_mode='tfidf' + algo='kmeans' end-to-end; other combinations still "
-    "live inside app_cluster.run_cluster() (ADR-0002 tracks the full migration). "
-    "Either select the supported combo or call the Tk-bound run_cluster() until "
-    "this branch is ported."
+    "Pipeline combo {combo!r} is not yet ported. Wave 3a slice ships "
+    "vec_mode='tfidf' + algo in {{'kmeans', 'agglo'}} end-to-end; other "
+    "combinations still live inside app_cluster.run_cluster() (ADR-0002 tracks "
+    "the full migration). Either select a supported combo or call the Tk-bound "
+    "run_cluster() until this branch is ported."
 )
 
 _SUPPORTED_VEC_MODE = "tfidf"
-_SUPPORTED_ALGO = "kmeans"
+_SUPPORTED_ALGOS = ("kmeans", "agglo")
+# Agglomerative needs dense input; cap n_rows to keep O(n²) memory bounded.
+_AGGLO_MAX_ROWS = 5_000
 
 
 def _combo(snap: Mapping[str, object]) -> str:
@@ -239,7 +241,7 @@ def _combo(snap: Mapping[str, object]) -> str:
 def _require_supported_combo(snap: Mapping[str, object]) -> None:
     vm = snap.get("cluster_vec_mode")
     algo = snap.get("cluster_algo")
-    if vm != _SUPPORTED_VEC_MODE or algo != _SUPPORTED_ALGO:
+    if vm != _SUPPORTED_VEC_MODE or algo not in _SUPPORTED_ALGOS:
         raise NotImplementedError(_STAGES_NOT_PORTED_MSG.format(combo=_combo(snap)))
 
 
@@ -355,29 +357,24 @@ def build_vectors(prepared: PreparedInputs, snap: Mapping[str, object]) -> Vecto
 
 
 def run_clustering(vectors: VectorPack, snap: Mapping[str, object]) -> ClusterResult:
-    """Stage 3: fit MiniBatchKMeans on the TF-IDF matrix.
+    """Stage 3: fit the configured algo on the TF-IDF matrix.
 
-    Slice-port: only ``snap['cluster_algo'] == 'kmeans'`` is supported.
-    Cuml/GPU KMeans is intentionally not wired in the slice — the Tk path
-    keeps that branch via cluster_algo_strategy.gpu_kmeans.
+    Slice-port: ``snap['cluster_algo']`` ∈ {'kmeans', 'agglo'}. Other algos
+    (hdbscan/bertopic/lda/fastopic, cuml/GPU KMeans) stay in the Tk path.
+
+    Kmeans keeps the sparse matrix; agglo (hierarchical) densifies via
+    ``.toarray()`` with a row guard — Ward linkage is O(n²) in memory.
     """
     _require_supported_combo(snap)
     if vectors.vectors is None:
         raise ValueError("run_clustering: VectorPack.vectors is None")
 
-    from sklearn.cluster import MiniBatchKMeans
-
     k_obj = snap.get("k_clusters")
     if not isinstance(k_obj, (int, float)) or int(k_obj) < 2:
         raise ValueError(
-            "run_clustering requires snap['k_clusters'] >= 2 for kmeans"
+            "run_clustering requires snap['k_clusters'] >= 2"
         )
     k = int(k_obj)
-
-    n_init_obj = snap.get("n_init_cluster", 10)
-    n_init = int(n_init_obj) if isinstance(n_init_obj, (int, float)) else 10
-    seed_obj = snap.get("random_state", 42)
-    seed = int(seed_obj) if isinstance(seed_obj, (int, float)) else 42
 
     n_rows = vectors.vectors.shape[0]
     if k > n_rows:
@@ -385,19 +382,43 @@ def run_clustering(vectors: VectorPack, snap: Mapping[str, object]) -> ClusterRe
             f"k_clusters={k} exceeds row count {n_rows}; pick a smaller K"
         )
 
-    model = MiniBatchKMeans(
-        n_clusters=k,
-        random_state=seed,
-        batch_size=1024,
-        n_init=n_init,
-        init="k-means++",
-        max_iter=300,
-    )
-    labels = model.fit_predict(vectors.vectors)
+    algo = str(snap.get("cluster_algo", ""))
+    if algo == "kmeans":
+        from sklearn.cluster import MiniBatchKMeans
+
+        n_init_obj = snap.get("n_init_cluster", 10)
+        n_init = int(n_init_obj) if isinstance(n_init_obj, (int, float)) else 10
+        seed_obj = snap.get("random_state", 42)
+        seed = int(seed_obj) if isinstance(seed_obj, (int, float)) else 42
+
+        model: object = MiniBatchKMeans(
+            n_clusters=k,
+            random_state=seed,
+            batch_size=1024,
+            n_init=n_init,
+            init="k-means++",
+            max_iter=300,
+        )
+        labels = model.fit_predict(vectors.vectors)  # type: ignore[attr-defined]
+    elif algo == "agglo":
+        from sklearn.cluster import AgglomerativeClustering
+
+        if n_rows > _AGGLO_MAX_ROWS:
+            raise ValueError(
+                f"agglo clustering capped at {_AGGLO_MAX_ROWS} rows (got {n_rows}); "
+                f"Ward linkage is O(n²) in memory — use kmeans for larger datasets"
+            )
+        dense = vectors.vectors.toarray()  # type: ignore[union-attr]
+        model = AgglomerativeClustering(n_clusters=k, linkage="ward")
+        labels = model.fit_predict(dense)  # type: ignore[attr-defined]
+    else:
+        # Unreachable: _require_supported_combo gates on the same set.
+        raise NotImplementedError(f"run_clustering: algo={algo!r} not in slice")
+
     return ClusterResult(
         vectors=vectors,
         labels=labels,
-        meta={"K": k, "algo": _SUPPORTED_ALGO, "model": model},
+        meta={"K": k, "algo": algo, "model": model},
     )
 
 
