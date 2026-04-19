@@ -1568,6 +1568,61 @@ class MetaFeatureExtractor(BaseEstimator, TransformerMixin):
         ]
 
 
+def _dhondt_allocate(
+    total_budget: int,
+    weights: Dict[str, int],
+    floor: int = 0,
+) -> Dict[str, int]:
+    """Пропорциональное распределение *total_budget* между ключами *weights*.
+
+    Используется метод д’Ондта (highest averages): на каждом шаге юнит бюджета
+    отдаётся ключу с максимальным частным ``w / (seats + 1)``. Ключи с нулевым
+    весом получают нулевую аллокацию.
+
+    Перед итерациями каждый ключ с ``weight > 0`` получает базовый *floor*,
+    если бюджет это позволяет. Если ``floor * n_active > total_budget`` —
+    ``floor`` клампится до ``total_budget // n_active``. Остаток раздаётся
+    методом д’Ондта.
+
+    Свойства:
+      * ``sum(result.values()) == total_budget`` (пока хватает бюджета).
+      * Для равных весов аллокация симметрична (отличие не более 1).
+      * Ключи с ``weight <= 0`` получают ``0``.
+    """
+    # Сохраняем исходный порядок ключей для детерминированности.
+    alloc: Dict[str, int] = {k: 0 for k in weights}
+    active = [k for k, w in weights.items() if w > 0]
+    if not active or total_budget <= 0:
+        return alloc
+
+    n_active = len(active)
+    base_floor = min(max(0, floor), total_budget // n_active)
+    for k in active:
+        alloc[k] = base_floor
+    remaining = total_budget - base_floor * n_active
+    if remaining <= 0:
+        return alloc
+
+    import heapq
+    heap: List[Tuple[float, int, str, int]] = []
+    for idx, k in enumerate(active):
+        # Начальное seats=0; частное = weights[k] / 1.
+        # Используем (-quotient, idx, key, seats) чтобы при равных частных
+        # стабильно побеждал меньший индекс.
+        heapq.heappush(heap, (-float(weights[k]), idx, k, 0))
+
+    for _ in range(remaining):
+        neg_q, idx, k, seats = heapq.heappop(heap)
+        alloc[k] += 1
+        new_seats = seats + 1
+        heapq.heappush(
+            heap,
+            (-float(weights[k]) / (new_seats + 1), idx, k, new_seats),
+        )
+
+    return alloc
+
+
 class PerFieldVectorizer(BaseEstimator, TransformerMixin):
     """
     Раздельный TF-IDF для каждого поля (DESC, CLIENT, OPERATOR, SUMMARY, …).
@@ -1713,25 +1768,16 @@ class PerFieldVectorizer(BaseEstimator, TransformerMixin):
             for _, tag, _ in active:
                 field_texts[tag].append(parsed.get(tag, ""))
 
-        # Распределяем бюджет признаков пропорционально весам.
-        # Проблема: max(floor, proportional) может превысить max_features на N_fields × floor.
-        # Решение: вычислить «сырые» аллокации, затем масштабировать вниз если сумма > max_features.
+        # Распределяем бюджет признаков пропорционально весам методом д’Ондта:
+        # строго сохраняем суммарный бюджет и получаем справедливое распределение
+        # (остатки раздаются ключам с наибольшим частным w/(seats+1)).
         char_budget = self.max_features
         word_budget = max(1, self.max_features // 3)
         _MIN_CHAR, _MIN_WORD = 200, 100     # абсолютные минимумы на поле
 
-        raw_char = {tag: max(_MIN_CHAR, int(char_budget * w / total_w)) for _, tag, w in active}
-        raw_word = {tag: max(_MIN_WORD, int(word_budget * w / total_w)) for _, tag, w in active}
-
-        # Масштабируем вниз если сумма превысила бюджет
-        sum_char = sum(raw_char.values())
-        if sum_char > char_budget:
-            scale = char_budget / sum_char
-            raw_char = {tag: max(_MIN_CHAR, int(v * scale)) for tag, v in raw_char.items()}
-        sum_word = sum(raw_word.values())
-        if sum_word > word_budget:
-            scale = word_budget / sum_word
-            raw_word = {tag: max(_MIN_WORD, int(v * scale)) for tag, v in raw_word.items()}
+        _weights = {tag: w for _, tag, w in active}
+        raw_char = _dhondt_allocate(char_budget, _weights, floor=_MIN_CHAR)
+        raw_word = _dhondt_allocate(word_budget, _weights, floor=_MIN_WORD)
 
         # Обучаем пары (char + word) TF-IDF для каждого активного поля.
         # Поля, у которых все тексты пустые, исключаем из _active.
