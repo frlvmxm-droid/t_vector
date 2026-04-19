@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import logging
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Optional
 
 _log = logging.getLogger(__name__)
+_DEFAULT_MAX_WORKERS = 4
 
 MAX_SEED_EXAMPLES = 3
 MAX_SEED_CHARS = 200
@@ -90,11 +92,13 @@ def augment_rare_classes(
     api_key: str,
     log_fn: Optional[Callable[[str], None]] = None,
     cancel_event: Optional[Any] = None,
+    max_workers: Optional[int] = None,
 ) -> tuple[list[str], list[str], dict[str, Any]]:
     """Augment classes with fewer than min_samples_threshold examples.
 
     For each rare class, calls the LLM to generate paraphrases of existing
-    examples and appends them to X, y.
+    examples and appends them to X, y. Per-class LLM calls run in parallel
+    (ThreadPoolExecutor) because each class is independent.
 
     Returns:
         X_aug: original + generated texts
@@ -111,28 +115,36 @@ def augment_rare_classes(
 
     X_aug = list(X)
     y_aug = list(y)
-    rows_added = 0
     skipped: list[str] = []
 
     class_texts: dict[str, list[str]] = {}
     for text, label in zip(X, y):
         class_texts.setdefault(label, []).append(text)
 
+    eligible: list[str] = []
     for cls in rare_classes:
-        if cancel_event is not None and cancel_event.is_set():
-            break
-
-        existing = class_texts.get(cls, [])
-        if not existing:
+        if not class_texts.get(cls):
             skipped.append(cls)
-            continue
+        else:
+            eligible.append(cls)
 
+    if not eligible:
+        report = {
+            "classes_augmented": 0,
+            "rows_added": 0,
+            "skipped": skipped,
+        }
+        return X_aug, y_aug, report
+
+    def _work(cls: str) -> tuple[str, list[str]]:
+        if cancel_event is not None and cancel_event.is_set():
+            return cls, []
+        existing = class_texts[cls]
         if log_fn:
             log_fn(
                 f"  LLM-аугментация: «{cls}» ({len(existing)} примеров → "
                 f"генерирую {n_paraphrases} перефразировок)"
             )
-
         generated = generate_class_paraphrases(
             examples=existing,
             n_paraphrases=n_paraphrases,
@@ -142,18 +154,30 @@ def augment_rare_classes(
             api_key=api_key,
             cancel_event=cancel_event,
         )
+        return cls, generated
 
+    workers = max(1, int(max_workers if max_workers is not None else _DEFAULT_MAX_WORKERS))
+    workers = min(workers, len(eligible))
+
+    # ThreadPoolExecutor used for I/O-bound LLM calls. Append order preserved
+    # by iterating `eligible` sequentially over the materialized results dict.
+    results: dict[str, list[str]] = {}
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        for cls, generated in ex.map(_work, eligible):
+            results[cls] = generated
+
+    rows_added = 0
+    for cls in eligible:
+        generated = results.get(cls, [])
         if not generated:
             skipped.append(cls)
             if log_fn:
                 log_fn(f"  ⚠ LLM-аугментация: «{cls}» — не удалось получить ответ, пропускаем")
             continue
-
         for text in generated:
             X_aug.append(text)
             y_aug.append(cls)
             rows_added += 1
-
         if log_fn:
             log_fn(f"  ✅ LLM-аугментация: «{cls}» +{len(generated)} строк")
 

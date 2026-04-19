@@ -269,13 +269,15 @@ def test_estimate_model_size_logs_kb():
     assert any("Размер модели" in m and "КБ" in m for m in logs)
 
 
-def test_estimate_model_size_returns_none_on_unpicklable():
-    class _Unpicklable:
-        def __reduce__(self):
-            raise RuntimeError("cannot pickle")
-    logs: list[str] = []
-    size = _estimate_model_size_bytes(_Unpicklable(), log_cb=logs.append)
-    assert size is None
+def test_estimate_model_size_analytical_on_empty_object():
+    """The analytical estimator walks ML-specific attributes (vocabulary_,
+    coef_, components_, …). An object with none of them yields just the
+    fixed framing overhead — not None — because no pickling is attempted."""
+    class _Empty:
+        pass
+    size = _estimate_model_size_bytes(_Empty(), log_cb=None)
+    assert isinstance(size, int)
+    assert size < 50_000  # only the fixed ~20 KB overhead
 
 
 # ── train_model E2E: each augmentation flag independently ─────────────────────

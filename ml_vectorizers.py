@@ -18,6 +18,7 @@ ml_vectorizers — векторайзеры и фабрики признаков
 from __future__ import annotations
 
 import math
+import os
 import re as _re
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, Union
 
@@ -1491,6 +1492,10 @@ class Lemmatizer(BaseEstimator, TransformerMixin):
         self._available = None
         self._backend: str = ""   # "pymorphy3" | "pymorphy2" | ""
         self.include_pos = bool(include_pos)
+        # Per-instance LRU for morph.parse(token); dominant hot path — same
+        # token recurs thousands of times across a corpus.
+        self._lemma_cache: Dict[Tuple[str, bool], str] = {}
+        self._LEMMA_CACHE_CAP = 50_000
 
     def _get_morph(self):
         if self._available is False:
@@ -1529,6 +1534,33 @@ class Lemmatizer(BaseEstimator, TransformerMixin):
         self.backend_: str = self._backend   # "pymorphy3" | "pymorphy2" | ""
         return self
 
+    def _lemma_for_token(self, token: str) -> str:
+        """Cached per-token lookup. Key includes include_pos so POS-tagged and
+        plain variants share no cache lines."""
+        include_pos = bool(getattr(self, "include_pos", False))
+        cache = self._lemma_cache
+        key = (token, include_pos)
+        cached = cache.get(key)
+        if cached is not None:
+            return cached
+        morph = self._get_morph()
+        if morph is None:
+            return token
+        parsed = morph.parse(token)
+        if parsed:
+            lemma = parsed[0].normal_form
+            if include_pos:
+                _pos = getattr(parsed[0].tag, "POS", None)
+                if _pos:
+                    lemma = f"{lemma}_{_pos}"
+        else:
+            lemma = token.lower()
+        # Cap cache to avoid unbounded growth on huge corpora.
+        if len(cache) >= self._LEMMA_CACHE_CAP:
+            cache.clear()
+        cache[key] = lemma
+        return lemma
+
     def _lemmatize_text(self, text: str) -> str:
         morph = self._get_morph()
         if morph is None:
@@ -1545,17 +1577,7 @@ class Lemmatizer(BaseEstimator, TransformerMixin):
             last_end = 0
             for m in self._TOKEN_RE.finditer(line):
                 result.append(line[last_end:m.start()])   # не-токен (пробелы, пунктуация)
-                token = m.group()
-                parsed = morph.parse(token)
-                if parsed:
-                    lemma = parsed[0].normal_form
-                    if getattr(self, "include_pos", False):
-                        _pos = getattr(parsed[0].tag, "POS", None)
-                        if _pos:
-                            lemma = f"{lemma}_{_pos}"
-                else:
-                    lemma = token.lower()
-                result.append(lemma)
+                result.append(self._lemma_for_token(m.group()))
                 last_end = m.end()
             result.append(line[last_end:])
             lines_out.append("".join(result))
@@ -1570,10 +1592,16 @@ class Lemmatizer(BaseEstimator, TransformerMixin):
     def __getstate__(self):
         state = self.__dict__.copy()
         state["_morph"] = None      # MorphAnalyzer не сериализуем (ни v2, ни v3)
+        state["_lemma_cache"] = {}  # cache is per-process scratch, not persisted
         return state
 
     def __setstate__(self, state):
         self.__dict__.update(state)
+        # Backfill cache if loading a pre-perf-optimization model bundle.
+        if "_lemma_cache" not in self.__dict__ or self._lemma_cache is None:
+            self._lemma_cache = {}
+        if "_LEMMA_CACHE_CAP" not in self.__dict__:
+            self._LEMMA_CACHE_CAP = 50_000
         # _morph будет восстановлен при первом вызове _get_morph()
 
 
@@ -1874,23 +1902,41 @@ class PerFieldVectorizer(BaseEstimator, TransformerMixin):
 
         # Обучаем пары (char + word) TF-IDF для каждого активного поля.
         # Поля, у которых все тексты пустые, исключаем из _active.
-        self._char_vecs = {}
-        self._word_vecs = {}
-        confirmed_active: List[Tuple[str, str, int]] = []
+        # Каждое поле независимо — параллелим через joblib threading backend,
+        # т.к. TfidfVectorizer.fit отпускает GIL внутри numpy/scipy.
+        from joblib import Parallel, delayed
+
+        eligible: List[Tuple[str, str, int]] = []
         for wk, tag, w in active:
             texts_for_tag = field_texts[tag]
-            if not any(t.strip() for t in texts_for_tag):
-                # Нет ни одного непустого документа — пропускаем поле
-                continue
-            max_char = raw_char[tag]
-            max_word = raw_word[tag]
-            cv, wv = self._make_tfidf_pair(max_char, max_word)
+            if any(t.strip() for t in texts_for_tag):
+                eligible.append((wk, tag, w))
+
+        def _fit_one(wk: str, tag: str, w: int):
+            texts_for_tag = field_texts[tag]
+            cv, wv = self._make_tfidf_pair(raw_char[tag], raw_word[tag])
             try:
                 cv.fit(texts_for_tag)
                 wv.fit(texts_for_tag)
             except ValueError:
-                # empty vocabulary — например, все тексты состоят из стоп-слов
+                return None
+            return (wk, tag, w, cv, wv)
+
+        n_jobs = min(len(eligible), max(1, (os.cpu_count() or 1)))
+        if n_jobs > 1 and len(eligible) > 1:
+            results = Parallel(n_jobs=n_jobs, backend="threading")(
+                delayed(_fit_one)(wk, tag, w) for wk, tag, w in eligible
+            )
+        else:
+            results = [_fit_one(wk, tag, w) for wk, tag, w in eligible]
+
+        self._char_vecs = {}
+        self._word_vecs = {}
+        confirmed_active: List[Tuple[str, str, int]] = []
+        for r in results:
+            if r is None:
                 continue
+            wk, tag, w, cv, wv = r
             self._char_vecs[tag] = cv
             self._word_vecs[tag] = wv
             confirmed_active.append((wk, tag, w))
@@ -2025,7 +2071,9 @@ def make_hybrid_vectorizer(
             sublinear_tf=sublinear_tf,
             stop_words=effective_stop_words,
         )
-        tfidf = FeatureUnion([("char", vec_char), ("word", vec_word)])
+        # n_jobs=-1 — char/word TF-IDF fit'ы независимы, threading backend
+        # joblib используется по умолчанию для FeatureUnion.
+        tfidf = FeatureUnion([("char", vec_char), ("word", vec_word)], n_jobs=-1)
 
     steps: list = [("phrase_remover", phrase_remover)]
     if use_lemma:
@@ -2052,9 +2100,9 @@ def make_hybrid_vectorizer(
             ("extract", MetaFeatureExtractor()),
             ("scale", StandardScaler()),
         ])
-        return FeatureUnion([
-            ("text", text_pipeline),
-            ("meta", meta_pipeline),
-        ])
+        return FeatureUnion(
+            [("text", text_pipeline), ("meta", meta_pipeline)],
+            n_jobs=-1,
+        )
 
     return text_pipeline

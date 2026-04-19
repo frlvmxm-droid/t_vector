@@ -120,30 +120,27 @@ def distill_soft_labels(
         if j_s is not None:
             teacher_proba[:, j_s] = teacher_proba_raw[:, j_t]
 
-    # One-hot hard labels. `classes` is derived from `y`, so every lbl is present.
-    hard_labels = np.zeros((len(X), n_classes))
-    for i, lbl in enumerate(y):
-        hard_labels[i, cls_to_idx[lbl]] = 1.0
+    # Vectorized one-hot: eye-based indexing replaces the per-row Python loop.
+    y_idx = np.fromiter((cls_to_idx[lbl] for lbl in y), dtype=np.int64, count=len(y))
+    hard_labels = np.eye(n_classes, dtype=teacher_proba.dtype)[y_idx]
 
     soft_proba = alpha * teacher_proba + (1.0 - alpha) * hard_labels
 
-    # Для sklearn: обучаем на argmax + sample_weight (= уверенность в истинном классе).
-    soft_y = [classes[int(soft_proba[i].argmax())] for i in range(len(X))]
-    true_cls_proba = np.array([
-        float(soft_proba[i, cls_to_idx[y_i]])
-        for i, y_i in enumerate(y)
-    ])
-    # sample_weight: примеры, где мягкая метка совпадает с истинной, весят больше
-    sample_weights = np.where(
-        np.array(soft_y) == np.array(y),
-        1.0 + true_cls_proba,
-        1.0 - true_cls_proba + 0.1,
-    )
+    # Vectorized argmax + per-row lookup of probability at the true class.
+    soft_y_idx = soft_proba.argmax(axis=1)
+    classes_arr = np.asarray(classes)
+    soft_y_arr = classes_arr[soft_y_idx]
+    true_cls_proba = soft_proba[np.arange(len(X)), y_idx]
+
+    y_arr = np.asarray(y)
+    matches = soft_y_arr == y_arr
+    sample_weights = np.where(matches, 1.0 + true_cls_proba, 1.1 - true_cls_proba)
+    soft_y = soft_y_arr.tolist()
 
     _log_msg(
         f"[Дистилляция] T={temperature} alpha={alpha} | "
         f"мягких меток ≠ истинных: "
-        f"{int((np.array(soft_y) != np.array(y)).sum())} из {len(y)}"
+        f"{int((~matches).sum())} из {len(y)}"
     )
     _log_msg("[Дистилляция] Обучение студента…")
 

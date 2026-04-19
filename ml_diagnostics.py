@@ -445,11 +445,20 @@ def detect_near_duplicate_conflicts(
             _X, _y, jaccard_threshold=_jaccard_thresh,
         )
         _pairs: list[tuple[str, str, str, str, float]] = []
-        # Точная фильтрация кандидатов по TF-IDF cosine
-        for _i, _j in _candidates:
-            _s = float(_cos_sim(_M[_i], _M[_j])[0, 0])
-            if _s >= threshold:
-                _pairs.append((_X[_i], _X[_j], _y[_i], _y[_j], _s))
+        if _candidates:
+            # Batched exact filter: one sparse mat-mul on unique rows
+            # instead of N per-pair cosine calls.
+            _cand_list = list(_candidates)
+            _unique = sorted({i for pair in _cand_list for i in pair})
+            _local_idx = {g: loc for loc, g in enumerate(_unique)}
+            _M_sub = _M[_unique]
+            # Rows of _M are already L2-normalized by TF-IDF settings above;
+            # cosine_similarity handles normalization if not, so we rely on it.
+            _sim_mat = _cos_sim(_M_sub, _M_sub)
+            for _i, _j in _cand_list:
+                _s = float(_sim_mat[_local_idx[_i], _local_idx[_j]])
+                if _s >= threshold:
+                    _pairs.append((_X[_i], _X[_j], _y[_i], _y[_j], _s))
         _pairs.sort(key=lambda _p: -_p[4])
         if log_fn:
             log_fn(
