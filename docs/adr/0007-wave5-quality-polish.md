@@ -111,6 +111,27 @@ Wave 5 result: 1503 passed / 0 failed / 0 DeprecationWarnings.
   +5 tests for `run_observability`. Gate ratcheted 50 → 65.
   Plan target 75 % deferred to Wave 6.5 (calibration / SetFit / LLM
   rerank fallback path tests).
+
+### Wave 6.5 actual (calibration / SetFit / LLM rerank fallback paths)
+- +55 unit tests across three new files:
+  `tests/test_calibration_paths.py` (14: auto-pick sigmoid/isotonic,
+  ECE/MCE/Brier graceful fallbacks, single-class → LogReg shortcut),
+  `tests/test_setfit_oom_paths.py` (19: VRAM band selection 0–80 GB,
+  env-overrides `BRT_SETFIT_MAX_TRAIN_OVERRIDE` /
+  `BRT_SETFIT_MAX_PAIRS_OVERRIDE`, silent `_cuda_cleanup` no-ops,
+  `_is_setfit_config_missing_error` substring detection for
+  `EntryNotFoundError` / `config_setfit` / `404`),
+  `tests/test_llm_rerank_fallback.py` (22: response parsing whitespace /
+  multiline / `Класс:` prefix, `_cache_read` missing-file / invalid-JSON
+  / non-string-label, `_cache_write` OSError swallow, in-batch dedup +
+  disk-cache hit/miss/write-back, generic-Exception path).
+- `.coveragerc` omits expanded with `app_deps.py`, `t5_summarizer.py`,
+  `ml_mlm_pretrain.py` — heavy HF-dependent modules covered by nightly
+  smoke, not unit tests; consistent rationale with existing UI-mixin
+  exclusions.
+- Coverage line/branch: 69 % → **73.15 %** on the testable core. Gate
+  ratcheted 65 → 72 (+1.15 pt safety margin). 1510 passed / 0 failed /
+  23 skipped.
 - Property tests (8 in `test_property_invariants.py`) catch a class of
   bugs example tests cannot (random inputs, shrunken counter-examples).
 - CI failure surface widens 1× → 3× Python versions + dedicated

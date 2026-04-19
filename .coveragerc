@@ -27,7 +27,13 @@ omit =
     app_cluster.py
     app_apply_view.py
     app_train_view.py
+    app_deps.py
     cluster_ui_builder.py
+    # Optional heavy-stack modules that require torch + transformers
+    # (and a downloaded HF checkpoint) to exercise meaningfully. Covered
+    # by nightly UI smoke / integration runs, not unit tests.
+    t5_summarizer.py
+    ml_mlm_pretrain.py
     # Deprecated re-export shims (warn on import, code lives elsewhere)
     core/feature_builder.py
     core/hw_profile.py
@@ -47,7 +53,7 @@ exclude_also =
     if __name__ == .__main__.:
     raise NotImplementedError
     \.\.\.$
-fail_under = 65
+fail_under = 72
 precision = 2
 show_missing = True
 skip_covered = True
