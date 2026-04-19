@@ -985,6 +985,178 @@ def cv_evaluate(
         return {}
 
 
+def _log_training_start(
+    X: List[str],
+    y: List[str],
+    clf_type: str,
+    C: float,
+    max_iter: int,
+    balanced: bool,
+    log_cb: Optional[Callable[[str], None]],
+) -> None:
+    """Логирует базовую статистику и, при необходимости, предупреждение о дисбалансе."""
+    if log_cb is None:
+        return
+    n_classes = len(set(y))
+    class_w = "balanced" if balanced else "None"
+    log_cb(f"[Обучение] Выборка: {len(X)} примеров | классов: {n_classes}")
+    log_cb(f"[Обучение] Классификатор: {clf_type} | C={C} | max_iter={max_iter} | class_weight={class_w}")
+    cnt = Counter(y)
+    if len(cnt) < 2:
+        return
+    max_c, min_c = max(cnt.values()), min(cnt.values())
+    if min_c > 0 and max_c / min_c > 10:
+        top_cls = max(cnt, key=cnt.get)
+        bot_cls = min(cnt, key=cnt.get)
+        log_cb(
+            f"⚠️  [Дисбаланс] {top_cls!r}={max_c} vs {bot_cls!r}={min_c} "
+            f"(ratio={max_c/min_c:.0f}x). Рекомендуется class_weight=balanced или SMOTE."
+        )
+
+
+def _apply_label_smoothing(
+    ytr: List[str],
+    *,
+    eps: float,
+    random_state: int,
+    log_cb: Optional[Callable[[str], None]],
+) -> List[str]:
+    """Label smoothing для hinge/hard-label классификаторов: eps% примеров
+    получают случайную метку (aka «label noise injection»). Эффект —
+    регуляризация границ решений, что функционально близко к классическому
+    label smoothing для soft-label loss.
+    """
+    if eps <= 0.0:
+        return list(ytr)
+    cls_all = sorted(set(ytr))
+    if len(cls_all) < 2:
+        return list(ytr)
+    n_flip = int(len(ytr) * float(eps))
+    if n_flip <= 0:
+        return list(ytr)
+    rng_ls = np.random.default_rng(int(random_state) + 7)
+    idx_flip = rng_ls.choice(len(ytr), size=n_flip, replace=False)
+    ytr_new = list(ytr)
+    for i in idx_flip:
+        others = [c for c in cls_all if c != ytr_new[i]]
+        if others:
+            ytr_new[i] = str(rng_ls.choice(others))
+    if log_cb:
+        log_cb(f"[Label-smoothing] перемаркировано {n_flip} примеров "
+               f"(eps={eps:.2f})")
+    return ytr_new
+
+
+def _augment_training_data(
+    Xtr: List[str],
+    ytr: List[str],
+    *,
+    random_state: int,
+    use_fuzzy_dedup: bool,
+    fuzzy_dedup_threshold: int,
+    use_smote: bool,
+    oversample_strategy: str,
+    max_dup_per_sample: int,
+    use_hard_negatives: bool,
+    use_field_dropout: bool,
+    field_dropout_prob: float,
+    field_dropout_copies: int,
+    use_label_smoothing: bool,
+    label_smoothing_eps: float,
+    log_cb: Optional[Callable[[str], None]],
+    progress_cb: Optional[Callable[[float, str], None]],
+) -> Tuple[List[str], List[str]]:
+    """Последовательность аугментаций обучающей выборки.
+
+    Порядок применения важен: fuzzy_dedup → SMOTE → hard_negatives →
+    field_dropout → label_smoothing. Каждая ступень опциональна и
+    отключается соответствующим булевым флагом.
+    """
+    if use_fuzzy_dedup:
+        Xtr, ytr, n_dedup = fuzzy_string_dedup(
+            Xtr, ytr, threshold=int(fuzzy_dedup_threshold), log_cb=log_cb,
+        )
+        if n_dedup and log_cb:
+            log_cb(f"[Обучение] После fuzzy-dedup: обучение={len(Xtr)}")
+
+    if use_smote:
+        Xtr, ytr = _oversample_rare_classes(
+            Xtr, ytr, random_state, log_cb, progress_cb,
+            max_dup_per_sample=max_dup_per_sample,
+            strategy=oversample_strategy,
+        )
+
+    if use_hard_negatives:
+        Xtr, ytr = _oversample_hard_negatives(
+            Xtr, ytr, random_state=random_state, log_cb=log_cb,
+        )
+
+    if use_field_dropout:
+        Xtr, ytr = _field_dropout_augment(
+            Xtr, ytr,
+            dropout_prob=float(field_dropout_prob),
+            n_copies=int(field_dropout_copies),
+            random_state=random_state,
+            log_cb=log_cb,
+        )
+
+    if use_label_smoothing:
+        ytr = _apply_label_smoothing(
+            ytr,
+            eps=float(label_smoothing_eps),
+            random_state=random_state,
+            log_cb=log_cb,
+        )
+
+    return Xtr, ytr
+
+
+def _log_svd_explained_variance(
+    pipe: Pipeline,
+    log_cb: Optional[Callable[[str], None]],
+) -> None:
+    """Если в features-ступени есть TruncatedSVD, логирует explained variance."""
+    if log_cb is None:
+        return
+    try:
+        feat_step = pipe.named_steps.get("features")
+        svd_step = None
+        if feat_step is not None:
+            if hasattr(feat_step, "named_steps"):
+                svd_step = feat_step.named_steps.get("svd")
+            elif hasattr(feat_step, "transformer_list"):
+                for _tname, tr in feat_step.transformer_list:
+                    if hasattr(tr, "named_steps"):
+                        svd_step = tr.named_steps.get("svd")
+                        if svd_step is not None:
+                            break
+        if svd_step is not None and hasattr(svd_step, "explained_variance_ratio_"):
+            var_total = float(svd_step.explained_variance_ratio_.sum())
+            n_comp = len(svd_step.explained_variance_ratio_)
+            log_cb(f"[SVD] объяснённая дисперсия: {var_total:.3f} ({n_comp} компонент)")
+    except Exception as svd_exc:  # noqa: BLE001 — diagnostic logging only; skip silently on any inspection failure
+        log_cb(f"[SVD] диагностика недоступна: {type(svd_exc).__name__}: {svd_exc}")
+
+
+def _estimate_model_size_bytes(
+    pipe: Pipeline,
+    log_cb: Optional[Callable[[str], None]],
+) -> Optional[int]:
+    """Оценка размера модели через in-memory joblib-дамп (без I/O на диск)."""
+    try:
+        import io as _io
+        import joblib as _joblib
+        buf = _io.BytesIO()
+        _joblib.dump(pipe, buf, compress=0)
+        size = buf.tell()
+        if log_cb:
+            log_cb(f"[Обучение] Размер модели: {size // 1024} КБ")
+        return size
+    except Exception as sz_exc:  # noqa: BLE001 — size estimate is telemetry; joblib/pickle internals vary by version
+        _log.debug("model_size_bytes estimation failed: %s", sz_exc)
+        return None
+
+
 def train_model(
     X: List[str],
     y: List[str],
@@ -1013,33 +1185,30 @@ def train_model(
     """
     Обучает Pipeline(features → classifier).
 
+    Функция оркестрирует стадии, каждая из которых вынесена в отдельную
+    helper-функцию:
+      _log_training_start       — диагностика и предупреждение о дисбалансе
+      cv_evaluate               — опциональная K-fold кросс-валидация
+      _maybe_skip_validation    — ранний выход при маленькой выборке
+      _augment_training_data    — fuzzy_dedup → SMOTE → hard_negatives →
+                                  field_dropout → label_smoothing
+      _log_svd_explained_variance
+      _compute_validation_extras — метрики holdout
+      _estimate_model_size_bytes
+
     Returns:
         pipe        — обученный sklearn Pipeline
         clf_type    — строка с типом классификатора
         report      — текстовый classification_report (или сообщение о пропуске валидации)
         labels      — список классов (или None если валидация пропущена)
         cm          — confusion matrix (или None если валидация пропущена)
-        extras      — доп. данные: {'thresh_90', 'thresh_75', 'report_dict'}
+        extras      — доп. данные: {'thresh_90', 'thresh_75', 'report_dict', ...}
     """
     clf, clf_type = make_classifier(y, C=C, max_iter=max_iter, balanced=balanced,
                                     calib_method=calib_method)
     pipe = Pipeline([("features", features), ("clf", clf)])
 
-    _n_classes = len(set(y))
-    _class_w = "balanced" if balanced else "None"
-    if log_cb:
-        log_cb(f"[Обучение] Выборка: {len(X)} примеров | классов: {_n_classes}")
-        log_cb(f"[Обучение] Классификатор: {clf_type} | C={C} | max_iter={max_iter} | class_weight={_class_w}")
-        _cnt_check = Counter(y)
-        if len(_cnt_check) >= 2:
-            _max_c, _min_c = max(_cnt_check.values()), min(_cnt_check.values())
-            if _min_c > 0 and _max_c / _min_c > 10:
-                _top_cls = max(_cnt_check, key=_cnt_check.get)
-                _bot_cls = min(_cnt_check, key=_cnt_check.get)
-                log_cb(
-                    f"⚠️  [Дисбаланс] {_top_cls!r}={_max_c} vs {_bot_cls!r}={_min_c} "
-                    f"(ratio={_max_c/_min_c:.0f}x). Рекомендуется class_weight=balanced или SMOTE."
-                )
+    _log_training_start(X, y, clf_type, C, max_iter, balanced, log_cb)
 
     # ── Кросс-валидация ДО обучения (pipe ещё не обучен) ──────────────────
     _cv_results: Dict[str, Any] = {}
@@ -1055,7 +1224,6 @@ def train_model(
     early = _maybe_skip_validation(X, y, test_size, pipe, clf_type, log_cb, progress_cb)
     if early is not None:
         # early = (pipe, clf_type, rep, None, None, extras_dict)
-        # extras_dict is mutable — safely update in place
         early[-1].update(_cv_results)
         return early
 
@@ -1068,54 +1236,23 @@ def train_model(
     if log_cb:
         log_cb(f"[Обучение] Разбивка: обучение={len(Xtr)}, валидация={len(Xva)} (test_size={test_size})")
 
-    if use_fuzzy_dedup:
-        Xtr, ytr, _n_dedup = fuzzy_string_dedup(
-            Xtr, ytr, threshold=int(fuzzy_dedup_threshold), log_cb=log_cb,
-        )
-        if _n_dedup and log_cb:
-            log_cb(f"[Обучение] После fuzzy-dedup: обучение={len(Xtr)}")
-
-    if use_smote:
-        Xtr, ytr = _oversample_rare_classes(
-            Xtr, ytr, random_state, log_cb, progress_cb,
-            max_dup_per_sample=max_dup_per_sample,
-            strategy=oversample_strategy,
-        )
-
-    if use_hard_negatives:
-        Xtr, ytr = _oversample_hard_negatives(
-            Xtr, ytr, random_state=random_state, log_cb=log_cb,
-        )
-
-    if use_field_dropout:
-        Xtr, ytr = _field_dropout_augment(
-            Xtr, ytr,
-            dropout_prob=float(field_dropout_prob),
-            n_copies=int(field_dropout_copies),
-            random_state=random_state,
-            log_cb=log_cb,
-        )
-
-    # Label smoothing для hinge/hard-label классификаторов: eps% примеров
-    # получают случайную метку (aka «label noise injection»). Эффект —
-    # регуляризация границ решений, что функционально близко к классическому
-    # label smoothing для soft-label loss.
-    if use_label_smoothing and label_smoothing_eps > 0.0:
-        _cls_all = sorted(set(ytr))
-        if len(_cls_all) >= 2:
-            _rng_ls = np.random.default_rng(int(random_state) + 7)
-            _n_flip = int(len(ytr) * float(label_smoothing_eps))
-            if _n_flip > 0:
-                _idx_flip = _rng_ls.choice(len(ytr), size=_n_flip, replace=False)
-                _ytr_new = list(ytr)
-                for _i in _idx_flip:
-                    _others = [c for c in _cls_all if c != _ytr_new[_i]]
-                    if _others:
-                        _ytr_new[_i] = str(_rng_ls.choice(_others))
-                ytr = _ytr_new
-                if log_cb:
-                    log_cb(f"[Label-smoothing] перемаркировано {_n_flip} примеров "
-                           f"(eps={label_smoothing_eps:.2f})")
+    Xtr, ytr = _augment_training_data(
+        Xtr, ytr,
+        random_state=random_state,
+        use_fuzzy_dedup=use_fuzzy_dedup,
+        fuzzy_dedup_threshold=fuzzy_dedup_threshold,
+        use_smote=use_smote,
+        oversample_strategy=oversample_strategy,
+        max_dup_per_sample=max_dup_per_sample,
+        use_hard_negatives=use_hard_negatives,
+        use_field_dropout=use_field_dropout,
+        field_dropout_prob=field_dropout_prob,
+        field_dropout_copies=field_dropout_copies,
+        use_label_smoothing=use_label_smoothing,
+        label_smoothing_eps=label_smoothing_eps,
+        log_cb=log_cb,
+        progress_cb=progress_cb,
+    )
 
     if progress_cb:
         progress_cb(80.0, "Обучение…")
@@ -1128,26 +1265,7 @@ def train_model(
     if log_cb:
         log_cb(f"[Обучение] Время обучения: {_training_duration_sec:.1f}с")
 
-    # Логируем объяснённую дисперсию SVD если он присутствует в пайплайне
-    if log_cb:
-        try:
-            _feat_step = pipe.named_steps.get("features")
-            _svd_step = None
-            if _feat_step is not None:
-                if hasattr(_feat_step, "named_steps"):
-                    _svd_step = _feat_step.named_steps.get("svd")
-                elif hasattr(_feat_step, "transformer_list"):
-                    for _tname, _tr in _feat_step.transformer_list:
-                        if hasattr(_tr, "named_steps"):
-                            _svd_step = _tr.named_steps.get("svd")
-                            if _svd_step is not None:
-                                break
-            if _svd_step is not None and hasattr(_svd_step, "explained_variance_ratio_"):
-                _var_total = float(_svd_step.explained_variance_ratio_.sum())
-                _n_comp = len(_svd_step.explained_variance_ratio_)
-                log_cb(f"[SVD] объяснённая дисперсия: {_var_total:.3f} ({_n_comp} компонент)")
-        except Exception as _svd_exc:  # noqa: BLE001 — diagnostic logging only; skip silently on any inspection failure
-            log_cb(f"[SVD] диагностика недоступна: {type(_svd_exc).__name__}: {_svd_exc}")
+    _log_svd_explained_variance(pipe, log_cb)
 
     if progress_cb:
         progress_cb(90.0, "Валидация…")
@@ -1156,17 +1274,9 @@ def train_model(
     extras["n_train"] = len(Xtr)
     extras["n_test"] = len(Xva)
     extras["training_duration_sec"] = round(_training_duration_sec, 3)
-    # Model size estimate via joblib serialisation (in-memory, no disk I/O)
-    try:
-        import io as _io
-        import joblib as _joblib
-        _buf = _io.BytesIO()
-        _joblib.dump(pipe, _buf, compress=0)
-        extras["model_size_bytes"] = _buf.tell()
-        if log_cb:
-            log_cb(f"[Обучение] Размер модели: {extras['model_size_bytes'] // 1024} КБ")
-    except Exception as _sz_exc:  # noqa: BLE001 — size estimate is telemetry; joblib/pickle internals vary by version
-        _log.debug("model_size_bytes estimation failed: %s", _sz_exc)
+    _model_size = _estimate_model_size_bytes(pipe, log_cb)
+    if _model_size is not None:
+        extras["model_size_bytes"] = _model_size
     extras.update(_cv_results)
 
     return pipe, clf_type, rep, labels, cm, extras
