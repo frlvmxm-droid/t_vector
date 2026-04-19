@@ -222,14 +222,14 @@ def prepare_inputs(files_snapshot: List[str], snap: Mapping[str, object]) -> Pre
 
 _STAGES_NOT_PORTED_MSG = (
     "Pipeline combo {combo!r} is not yet ported. Wave 3a slice ships "
-    "vec_mode='tfidf' + algo in {{'kmeans', 'agglo'}} end-to-end; other "
+    "vec_mode='tfidf' + algo in {{'kmeans', 'agglo', 'lda'}} end-to-end; other "
     "combinations still live inside app_cluster.run_cluster() (ADR-0002 tracks "
     "the full migration). Either select a supported combo or call the Tk-bound "
     "run_cluster() until this branch is ported."
 )
 
 _SUPPORTED_VEC_MODE = "tfidf"
-_SUPPORTED_ALGOS = ("kmeans", "agglo")
+_SUPPORTED_ALGOS = ("kmeans", "agglo", "lda")
 # Agglomerative needs dense input; cap n_rows to keep O(n²) memory bounded.
 _AGGLO_MAX_ROWS = 5_000
 
@@ -310,15 +310,17 @@ def _adaptive_min_df(n_rows: int) -> int:
 
 
 def build_vectors(prepared: PreparedInputs, snap: Mapping[str, object]) -> VectorPack:
-    """Stage 2: produce a TF-IDF sample × feature matrix.
+    """Stage 2: produce the clustering matrix (+ a TF-IDF keyword matrix).
 
-    Slice-port: only ``snap['cluster_vec_mode'] == 'tfidf'`` is supported;
-    other modes raise ``NotImplementedError`` with the offending combo
-    named so the caller can route to the Tk path.
+    Slice-port: only ``snap['cluster_vec_mode'] == 'tfidf'`` is supported.
+    For ``algo='lda'`` a ``CountVectorizer`` is built *additionally* for
+    the LDA fit (sklearn's LDA expects count features, not TF-IDF); the
+    TF-IDF keyword matrix lives alongside so postprocess still extracts
+    TF-IDF-weighted top terms — matching the Tk path at line 3714.
     """
     _require_supported_combo(snap)
 
-    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
 
     text_col_obj = snap.get("text_col")
     if not isinstance(text_col_obj, str) or not text_col_obj.strip():
@@ -341,18 +343,39 @@ def build_vectors(prepared: PreparedInputs, snap: Mapping[str, object]) -> Vecto
     max_features_obj = snap.get("cluster_max_features", 50_000)
     max_features = int(max_features_obj) if isinstance(max_features_obj, (int, float)) else 50_000
 
-    vec = TfidfVectorizer(
+    tfidf_vec = TfidfVectorizer(
         analyzer="word",
         ngram_range=(1, 2),
         min_df=min_df,
         max_features=max_features,
         sublinear_tf=True,
     )
-    matrix = vec.fit_transform(texts)
+    tfidf_matrix = tfidf_vec.fit_transform(texts)
+
+    algo = str(snap.get("cluster_algo", ""))
+    if algo == "lda":
+        count_vec = CountVectorizer(
+            analyzer="word",
+            ngram_range=(1, 2),
+            min_df=min_df,
+            max_features=max_features,
+        )
+        clustering_matrix = count_vec.fit_transform(texts)
+        clustering_vectorizer: object = count_vec
+    else:
+        clustering_matrix = tfidf_matrix
+        clustering_vectorizer = tfidf_vec
+
     return VectorPack(
         prepared=prepared,
-        vectors=matrix,
-        meta={"vectorizer": vec, "texts": texts, "min_df": min_df},
+        vectors=clustering_matrix,
+        meta={
+            "vectorizer": clustering_vectorizer,
+            "keyword_vectorizer": tfidf_vec,
+            "keyword_matrix": tfidf_matrix,
+            "texts": texts,
+            "min_df": min_df,
+        },
     )
 
 
@@ -383,13 +406,13 @@ def run_clustering(vectors: VectorPack, snap: Mapping[str, object]) -> ClusterRe
         )
 
     algo = str(snap.get("cluster_algo", ""))
+    seed_obj = snap.get("random_state", 42)
+    seed = int(seed_obj) if isinstance(seed_obj, (int, float)) else 42
     if algo == "kmeans":
         from sklearn.cluster import MiniBatchKMeans
 
         n_init_obj = snap.get("n_init_cluster", 10)
         n_init = int(n_init_obj) if isinstance(n_init_obj, (int, float)) else 10
-        seed_obj = snap.get("random_state", 42)
-        seed = int(seed_obj) if isinstance(seed_obj, (int, float)) else 42
 
         model: object = MiniBatchKMeans(
             n_clusters=k,
@@ -411,6 +434,21 @@ def run_clustering(vectors: VectorPack, snap: Mapping[str, object]) -> ClusterRe
         dense = vectors.vectors.toarray()  # type: ignore[union-attr]
         model = AgglomerativeClustering(n_clusters=k, linkage="ward")
         labels = model.fit_predict(dense)  # type: ignore[attr-defined]
+    elif algo == "lda":
+        import numpy as _np
+        from sklearn.decomposition import LatentDirichletAllocation
+
+        max_iter_obj = snap.get("lda_max_iter", 10)
+        max_iter = int(max_iter_obj) if isinstance(max_iter_obj, (int, float)) else 10
+
+        model = LatentDirichletAllocation(
+            n_components=k,
+            max_iter=max_iter,
+            learning_method="online",
+            random_state=seed,
+        )
+        doc_topics = model.fit_transform(vectors.vectors)  # type: ignore[attr-defined]
+        labels = _np.argmax(doc_topics, axis=1)
     else:
         # Unreachable: _require_supported_combo gates on the same set.
         raise NotImplementedError(f"run_clustering: algo={algo!r} not in slice")
@@ -466,10 +504,13 @@ def postprocess_clusters(
         int(cid): int(count)
         for cid, count in zip(*_np.unique(labels, return_counts=True))
     }
+    # Keyword extraction prefers the TF-IDF matrix when one exists (LDA
+    # fits on counts but TF-IDF-weighted keywords are more informative —
+    # matching run_cluster()'s behavior at line 3714 / 2555).
     vec_meta = result.vectors.meta or {}
-    keywords = _cluster_keywords(
-        result.vectors.vectors, labels, vec_meta["vectorizer"],
-    )
+    kw_matrix = vec_meta.get("keyword_matrix", result.vectors.vectors)
+    kw_vectorizer = vec_meta.get("keyword_vectorizer", vec_meta["vectorizer"])
+    keywords = _cluster_keywords(kw_matrix, labels, kw_vectorizer)
     payload: dict[str, object] = {
         "prepared": prepared,
         "snap": _as_cluster_snapshot(snap),

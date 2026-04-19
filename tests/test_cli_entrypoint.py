@@ -167,6 +167,52 @@ def test_cluster_supported_combo_runs_full_pipeline(tmp_path, capsys):
     assert cluster_ids <= {"0", "1"}
 
 
+def test_cluster_lda_combo_runs_full_pipeline(tmp_path, capsys):
+    """Slice extension: tfidf keyword matrix + LDA (CountVectorizer fit,
+    TF-IDF keywords) round-trips through all 4 stages."""
+    import csv as _csv
+
+    snap_path = tmp_path / "snap.json"
+    snap_path.write_text(
+        json.dumps({
+            "cluster_vec_mode": "tfidf", "cluster_algo": "lda",
+            "lda_max_iter": 20,
+        }),
+        encoding="utf-8",
+    )
+
+    inp = tmp_path / "in.csv"
+    out = tmp_path / "out.csv"
+    rows = [
+        "перевод денег срочно", "блокировка карты сегодня",
+        "перевод на счёт", "карта заблокирована вчера",
+        "перевести деньги", "разблокировать карту",
+        "отправить перевод", "карта блок",
+        "перевод денег", "карту заблокировали",
+    ]
+    with inp.open("w", encoding="utf-8", newline="") as f:
+        w = _csv.writer(f)
+        w.writerow(["text"])
+        for r in rows:
+            w.writerow([r])
+
+    rc = main([
+        "cluster", "--files", str(inp), "--out", str(out),
+        "--snap", str(snap_path),
+        "--text-col", "text", "--k-clusters", "2",
+    ])
+    assert rc == 0, capsys.readouterr().err
+    parsed = json.loads(capsys.readouterr().out)
+    assert parsed["stage"] == "export_cluster_outputs"
+
+    with out.open() as f:
+        reader = list(_csv.reader(f))
+    assert reader[0] == ["text", "cluster_id", "top_keywords"]
+    assert len(reader) == 1 + len(rows)
+    cluster_ids = {row[1] for row in reader[1:]}
+    assert cluster_ids <= {"0", "1"}
+
+
 def test_cluster_agglo_combo_runs_full_pipeline(tmp_path, capsys):
     """Slice extension: tfidf + agglomerative (Ward linkage) round-trips."""
     import csv as _csv
