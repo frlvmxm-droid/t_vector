@@ -58,24 +58,43 @@ def test_parser_train_accepts_data_and_out():
 # cluster — skeleton until Wave 3a pipeline port
 # ---------------------------------------------------------------------------
 
-def test_cluster_refuses_without_allow_skeleton(capsys):
-    """Stages 2-5 raise NotImplementedError, so the CLI gates behind the
-    same --allow-skeleton opt-in as `train`/`apply` to avoid advertising
-    a full pipeline it cannot run."""
+def test_cluster_supported_combo_requires_out(capsys):
+    """Wave 3a slice: default snap (tfidf+kmeans) is the supported combo;
+    it runs the real pipeline and therefore needs --out."""
     rc = main(["cluster", "--files", "a.xlsx"])
     assert rc == 2
     err = capsys.readouterr().err
-    assert "skeleton" in err.lower()
+    assert "--out" in err
 
 
-def test_cluster_allow_skeleton_runs_prepare_only(tmp_path, capsys):
-    """With --allow-skeleton, the CLI runs the one real stage
-    (prepare_inputs) and emits a JSON summary marking the port gap."""
+def test_cluster_unsupported_combo_refuses_without_allow_skeleton(tmp_path, capsys):
+    """For combos outside the slice (e.g. sbert+hdbscan), --allow-skeleton
+    is still required to acknowledge the prepare-only fallback."""
+    snap_path = tmp_path / "snap.json"
+    snap_path.write_text(
+        json.dumps({"cluster_vec_mode": "sbert", "cluster_algo": "hdbscan"}),
+        encoding="utf-8",
+    )
+    rc = main(["cluster", "--files", "a.xlsx", "--snap", str(snap_path)])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "Wave 3a slice" in err
+    assert "sbert" in err and "hdbscan" in err
+
+
+def test_cluster_allow_skeleton_runs_prepare_only_for_unsupported_combo(
+    tmp_path, capsys,
+):
+    """With --allow-skeleton on an unsupported combo, prepare_inputs runs
+    and the JSON summary names the port gap."""
     from types import SimpleNamespace
 
     snap_path = tmp_path / "snap.json"
     snap_path.write_text(
-        json.dumps({"cluster_role_mode": "all", "ignore_chatbot_cluster": True}),
+        json.dumps({
+            "cluster_vec_mode": "sbert", "cluster_algo": "hdbscan",
+            "cluster_role_mode": "all", "ignore_chatbot_cluster": True,
+        }),
         encoding="utf-8",
     )
 
@@ -98,14 +117,13 @@ def test_cluster_allow_skeleton_runs_prepare_only(tmp_path, capsys):
     parsed = json.loads(capsys.readouterr().out)
     assert parsed["stage"] == "prepare_inputs"
     assert parsed["files"] == ["f1.xlsx", "f2.xlsx"]
-    assert "Wave 3a" in parsed["note"]
+    assert "skeleton" in parsed["note"].lower()
 
 
 def test_cluster_missing_snap_returns_error(capsys):
-    """Snap-file errors surface as exit code 1 even with --allow-skeleton."""
+    """Snap-file errors surface as exit code 1."""
     rc = main([
-        "cluster", "--allow-skeleton",
-        "--files", "a.xlsx",
+        "cluster", "--files", "a.xlsx",
         "--snap", "/does/not/exist.json",
     ])
     assert rc == 1
@@ -113,24 +131,40 @@ def test_cluster_missing_snap_returns_error(capsys):
     assert "snap file not found" in err
 
 
-def test_cluster_without_snap_uses_empty_dict(capsys):
-    """Omitting --snap forwards an empty dict to ClusteringWorkflow.prepare_only."""
-    from types import SimpleNamespace
+def test_cluster_supported_combo_runs_full_pipeline(tmp_path, capsys):
+    """End-to-end: tiny CSV → 4-stage pipeline → output CSV with cluster ids."""
+    import csv as _csv
 
-    fake_prepared = SimpleNamespace(
-        files_snapshot=["a.xlsx"],
-        role_context=SimpleNamespace(role_label="Весь диалог"),
-    )
-    with patch(
-        "cluster_workflow_service.ClusteringWorkflow.prepare_only",
-        return_value=fake_prepared,
-    ) as mock_prep:
-        rc = main(["cluster", "--allow-skeleton", "--files", "a.xlsx"])
+    inp = tmp_path / "in.csv"
+    out = tmp_path / "out.csv"
+    rows = [
+        "перевод денег срочно", "блокировка карты сегодня",
+        "перевод на счёт", "карта заблокирована вчера",
+        "перевести деньги", "разблокировать карту",
+        "отправить перевод", "карта блок",
+        "перевод", "блок",
+    ]
+    with inp.open("w", encoding="utf-8", newline="") as f:
+        w = _csv.writer(f)
+        w.writerow(["text"])
+        for r in rows:
+            w.writerow([r])
+
+    rc = main([
+        "cluster", "--files", str(inp), "--out", str(out),
+        "--text-col", "text", "--k-clusters", "2",
+    ])
     assert rc == 0
-    kwargs = mock_prep.call_args.kwargs
-    args_ = mock_prep.call_args.args
-    passed_snap = kwargs.get("snap") if "snap" in kwargs else (args_[1] if len(args_) > 1 else None)
-    assert passed_snap == {}
+    parsed = json.loads(capsys.readouterr().out)
+    assert parsed["stage"] == "export_cluster_outputs"
+    assert parsed["k_clusters_requested"] == 2
+
+    with out.open() as f:
+        reader = list(_csv.reader(f))
+    assert reader[0] == ["text", "cluster_id", "top_keywords"]
+    assert len(reader) == 1 + len(rows)
+    cluster_ids = {row[1] for row in reader[1:]}
+    assert cluster_ids <= {"0", "1"}
 
 
 # ---------------------------------------------------------------------------
@@ -248,13 +282,23 @@ def test_apply_missing_model_returns_error(tmp_path, capsys):
 # --debug re-raises
 # ---------------------------------------------------------------------------
 
-def test_debug_flag_reraises():
+def test_debug_flag_reraises(tmp_path):
+    """--debug re-raises rather than swallowing. Uses the unsupported-combo
+    fallback (prepare_only) because that's the path patched here."""
+    snap_path = tmp_path / "snap.json"
+    snap_path.write_text(
+        json.dumps({"cluster_vec_mode": "sbert", "cluster_algo": "hdbscan"}),
+        encoding="utf-8",
+    )
     with patch(
         "cluster_workflow_service.ClusteringWorkflow.prepare_only",
         side_effect=RuntimeError("boom"),
     ):
         with pytest.raises(RuntimeError, match="boom"):
-            main(["--debug", "cluster", "--allow-skeleton", "--files", "a.xlsx"])
+            main([
+                "--debug", "cluster", "--allow-skeleton",
+                "--files", "a.xlsx", "--snap", str(snap_path),
+            ])
 
 
 # ---------------------------------------------------------------------------

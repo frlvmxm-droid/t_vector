@@ -159,37 +159,72 @@ def _write_apply_output(
 # Subcommand: cluster
 # ---------------------------------------------------------------------------
 
+_CLUSTER_SUPPORTED = {"vec_mode": "tfidf", "algo": "kmeans"}
+
+
 def cmd_cluster(args: argparse.Namespace) -> int:
-    """Skeleton — dispatch to `ClusteringWorkflow.run`.
+    """Run the headless clustering pipeline.
 
-    The 4 pipeline stages (build_vectors, run_clustering,
-    postprocess_clusters, export_cluster_outputs) are not yet ported
-    out of `app_cluster.run_cluster()`; they raise
-    `NotImplementedError`. Running the full pipeline headlessly thus
-    fails after the prepare-inputs stage. This command refuses to
-    proceed without an explicit `--allow-skeleton` opt-in, matching
-    the `train` / `apply` skeletons. See ADR-0002.
+    Wave 3a slice ships only ``cluster_vec_mode='tfidf' +
+    cluster_algo='kmeans'`` end-to-end. For the supported combo the
+    full 4-stage pipeline runs without ``--allow-skeleton``: it reads
+    ``--text-col`` from each input file, fits TF-IDF + MiniBatchKMeans,
+    and writes ``(text, cluster_id, top_keywords)`` rows to ``--out``.
+    For any other combo the command falls back to the prepare-inputs
+    skeleton path and requires ``--allow-skeleton`` (matching the
+    pre-Wave-3a contract).
     """
-    if not args.allow_skeleton:
-        _stderr_logger(
-            "cluster: skeleton only — pipeline stages 2–5 raise "
-            "NotImplementedError until Wave 3a lands. Pass "
-            "--allow-skeleton to run the prepare-inputs stage and exit."
-        )
-        return 2
-
     from cluster_workflow_service import ClusteringWorkflow   # local import: heavy
 
     snap = _load_json(args.snap) if args.snap else {}
-    prepared = ClusteringWorkflow.prepare_only(
-        files_snapshot=list(args.files or []),
-        snap=snap,
+    snap.setdefault("cluster_vec_mode", _CLUSTER_SUPPORTED["vec_mode"])
+    snap.setdefault("cluster_algo", _CLUSTER_SUPPORTED["algo"])
+
+    is_supported = (
+        snap.get("cluster_vec_mode") == _CLUSTER_SUPPORTED["vec_mode"]
+        and snap.get("cluster_algo") == _CLUSTER_SUPPORTED["algo"]
+    )
+
+    if not is_supported:
+        if not args.allow_skeleton:
+            _stderr_logger(
+                f"cluster: combo {snap.get('cluster_vec_mode')!r}+"
+                f"{snap.get('cluster_algo')!r} not ported in Wave 3a slice. "
+                "Pass --allow-skeleton to run the prepare-inputs stage and exit, "
+                "or pick cluster_vec_mode='tfidf' + cluster_algo='kmeans'."
+            )
+            return 2
+        prepared = ClusteringWorkflow.prepare_only(
+            files_snapshot=list(args.files or []), snap=snap,
+        )
+        summary = {
+            "stage": "prepare_inputs",
+            "files": list(prepared.files_snapshot),
+            "role": prepared.role_context.role_label,
+            "note": "skeleton — combo not in Wave 3a slice; see ADR-0007",
+        }
+        json.dump(summary, sys.stdout, ensure_ascii=False, indent=2)
+        sys.stdout.write("\n")
+        return 0
+
+    # Supported combo — wire the slice-port required fields from CLI args.
+    if not args.out:
+        _stderr_logger("cluster: --out is required for the supported combo")
+        return 2
+    snap["text_col"] = args.text_col
+    snap["k_clusters"] = int(args.k_clusters)
+    snap["output_path"] = args.out
+
+    log_cb = _stderr_logger if args.verbose else None
+    res = ClusteringWorkflow.run(
+        files_snapshot=list(args.files or []), snap=snap, log_cb=log_cb,
     )
     summary = {
-        "stage": "prepare_inputs",
-        "files": list(prepared.files_snapshot),
-        "role": prepared.role_context.role_label,
-        "note": "stages 2-5 not ported; see ADR-0002 / plan Wave 3a",
+        "stage": "export_cluster_outputs",
+        "k_clusters_requested": int(args.k_clusters),
+        "k_clusters_found": res.n_clusters,
+        "n_noise": res.n_noise,
+        "out": args.out,
     }
     json.dump(summary, sys.stdout, ensure_ascii=False, indent=2)
     sys.stdout.write("\n")
@@ -368,13 +403,31 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="command", required=True)
 
     # cluster
-    pc = sub.add_parser("cluster", help="Skeleton — clustering pipeline (Wave 3a).")
+    pc = sub.add_parser(
+        "cluster",
+        help="TF-IDF + KMeans clustering (Wave 3a slice; other combos still skeleton).",
+    )
     pc.add_argument("--files", nargs="+", required=True, help="Input .xlsx/.csv file paths.")
     pc.add_argument("--snap", default=None, help="JSON file with snap parameters.")
+    pc.add_argument(
+        "--out", default=None,
+        help="Output CSV path (required for the supported tfidf+kmeans combo).",
+    )
+    pc.add_argument(
+        "--text-col", default="text",
+        help="Text column name to read from each input file (default: text).",
+    )
+    pc.add_argument(
+        "--k-clusters", type=int, default=8,
+        help="Number of KMeans clusters (default: 8).",
+    )
     pc.add_argument("--verbose", action="store_true", help="Log each stage to stderr.")
     pc.add_argument(
         "--allow-skeleton", action="store_true",
-        help="Acknowledge that stages 2-5 of the pipeline are not yet ported.",
+        help=(
+            "Acknowledge skeleton fallback for combos outside the Wave 3a "
+            "slice (anything other than tfidf+kmeans)."
+        ),
     )
     pc.set_defaults(func=cmd_cluster)
 

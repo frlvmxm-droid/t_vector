@@ -49,15 +49,26 @@ python -m bank_reason_trainer apply \
     --model model.joblib --data in.xlsx --out out.xlsx \
     --text-col text [--threshold 0.5]
 
-# Cluster: prepare-only stage; full pipeline pending Wave 3a port
+# Cluster: TF-IDF + MiniBatchKMeans (Wave 3a slice — real end-to-end)
 python -m bank_reason_trainer cluster --files a.xlsx b.xlsx \
-    --snap snap.json --allow-skeleton
+    --out clusters.csv --text-col text --k-clusters 8
+
+# Cluster: other combos (sbert/setfit/hdbscan/agglo/lda) still need
+# --allow-skeleton; only prepare_inputs runs, the rest live inside
+# the Tk-bound app_cluster.run_cluster() until they are ported.
+python -m bank_reason_trainer cluster --files a.xlsx b.xlsx \
+    --snap sbert_snap.json --allow-skeleton
 ```
 
 `train` and `apply` are real (Wave 8.3): TF-IDF features, joblib bundle
-round-trip, CSV/XLSX I/O. `cluster` still gates behind `--allow-skeleton`
-because pipeline stages 2–5 raise `NotImplementedError` until the Wave 3a
-port lands — see `docs/adr/0002-pipeline-stages-and-snapshots.md`.
+round-trip, CSV/XLSX I/O. `cluster`'s default combo (`tfidf` + `kmeans`)
+is real end-to-end after the Wave 3a slice port — it streams text from
+`--files`, fits a TF-IDF vectorizer + MiniBatchKMeans, and writes
+`text,cluster_id,top_keywords` to `--out`. Combos outside the slice
+(SBERT, SetFit, HDBSCAN, agglomerative, LDA) still raise
+`NotImplementedError` and require `--allow-skeleton` for the prepare-only
+fallback — see `docs/adr/0002-pipeline-stages-and-snapshots.md` and
+`docs/adr/0007-wave5-quality-polish.md`.
 
 ---
 

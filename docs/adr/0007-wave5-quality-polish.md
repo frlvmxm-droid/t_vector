@@ -155,11 +155,45 @@ Wave 5 result: 1503 passed / 0 failed / 0 DeprecationWarnings.
   (`test_apply_round_trip_train_then_predict`), missing-data /
   too-few-classes / missing-model error paths, and a parser-level
   contract guard. Net +7 tests.
-* Cluster CLI keeps the `--allow-skeleton` gate — stages 2–5 of
-  `app_cluster_pipeline.py` are still `NotImplementedError`. See the
-  Wave 7 deferral note below.
+* Cluster CLI keeps the `--allow-skeleton` gate **only for unsupported
+  combos** (sbert/setfit + hdbscan/agglo/lda). The default `tfidf` +
+  `kmeans` combo is real after the Wave 3a slice port — see next section.
 
-### Wave 7 (run_cluster decomposition) — deferred to a later wave
+### Wave 3a slice port (tfidf + kmeans end-to-end) — shipped
+The four `NotImplementedError` stubs in `app_cluster_pipeline.py`
+(`build_vectors`, `run_clustering`, `postprocess_clusters`,
+`export_cluster_outputs`) now have a real implementation for the
+narrowest useful combo: `cluster_vec_mode="tfidf"` +
+`cluster_algo="kmeans"`. Other combos still raise — the message names
+the slice and points to ADR-0002.
+
+* `build_vectors` reads `text_col` from each `--files` path via
+  `excel_utils.open_tabular`, deduplicates blank cells, then fits
+  `TfidfVectorizer(analyzer="word", ngram_range=(1,2), sublinear_tf=True)`
+  with an adaptive `min_df` rule (`1` for `<5k`, `2` for `<50k`, `3`
+  otherwise — mirrors the Tk-bound `run_cluster()` heuristic).
+* `run_clustering` fits `MiniBatchKMeans(n_clusters=k, init="k-means++",
+  batch_size=1024, max_iter=300)` with the snap-supplied `random_state`
+  / `n_init`. Validates `k >= 2` ahead of fit; ValueError on `k=1`.
+* `postprocess_clusters` computes per-cluster sizes and the top-5 TF-IDF
+  feature names per cluster (sparse-row mean → argpartition). No LLM
+  naming, no silhouette — those stay in the Tk path until they need
+  headless coverage.
+* `export_cluster_outputs` writes a single CSV with header
+  `[text, cluster_id, top_keywords]`. XLSX export and the multi-sheet
+  variants from `run_cluster()` are out of scope for the slice.
+* CLI semantics changed: `cluster --files X` defaults to the supported
+  combo and now requires `--out`; `--text-col` (default `"text"`) and
+  `--k-clusters` (default `8`) round out the args. `--allow-skeleton` is
+  still required to acknowledge the prepare-only fallback for
+  unsupported combos.
+* Tests: `tests/test_cli_entrypoint.py::test_cluster_supported_combo_runs_full_pipeline`
+  is the new E2E baseline (10-row CSV → k=2 → output CSV with cluster
+  ids). `tests/test_cluster_pipeline_smoke.py` retargeted from "all
+  stages raise" to "unsupported combos raise" — the slice is now the
+  positive case. 1550 passed / 18 skipped.
+
+### Wave 7 (full run_cluster decomposition) — still deferred
 Investigation in this wave confirmed Wave 7.2/7.3 (extract stages 2–3
 from `app_cluster.run_cluster()`) cannot ship safely yet:
 

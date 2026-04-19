@@ -72,13 +72,21 @@ class StageMeta(TypedDict, total=False):
     prepared: PreparedInputs
 
 
-class PostprocessPayload(TypedDict):
+class PostprocessPayload(TypedDict, total=False):
     prepared: PreparedInputs
     snap: ClusterSnapshot
+    # Wave 3a slice (TF-IDF + KMeans only):
+    cluster_sizes: dict[int, int]
+    cluster_keywords: dict[int, List[str]]
+    texts: List[str]
+    labels: object  # numpy ndarray; kept as object to avoid hard numpy dep
 
 
-class ExportOutputs(TypedDict):
+class ExportOutputs(TypedDict, total=False):
     snap: ClusterSnapshot
+    # Wave 3a slice:
+    out_path: str
+    rows_written: int
 
 
 def _as_cluster_snapshot(snap: Mapping[str, object]) -> ClusterSnapshot:
@@ -213,38 +221,206 @@ def prepare_inputs(files_snapshot: List[str], snap: Mapping[str, object]) -> Pre
 
 
 _STAGES_NOT_PORTED_MSG = (
-    "Pipeline stage {name!r} is not yet ported. The real math still lives in "
-    "app_cluster.run_cluster() around lines 3307–4273; ADR-0002 tracks the "
-    "migration (Wave 3a). Calling the pipeline adapter directly would silently "
-    "drop vectors/labels — see the previous no-op implementation. Use "
-    "app_cluster.ClusterTabMixin.run_cluster() until the migration lands, or "
-    "bypass this module with unit-tested replacements."
+    "Pipeline combo {combo!r} is not yet ported. Wave 3a slice ships only "
+    "vec_mode='tfidf' + algo='kmeans' end-to-end; other combinations still "
+    "live inside app_cluster.run_cluster() (ADR-0002 tracks the full migration). "
+    "Either select the supported combo or call the Tk-bound run_cluster() until "
+    "this branch is ported."
 )
+
+_SUPPORTED_VEC_MODE = "tfidf"
+_SUPPORTED_ALGO = "kmeans"
+
+
+def _combo(snap: Mapping[str, object]) -> str:
+    return f"{snap.get('cluster_vec_mode', '?')}+{snap.get('cluster_algo', '?')}"
+
+
+def _require_supported_combo(snap: Mapping[str, object]) -> None:
+    vm = snap.get("cluster_vec_mode")
+    algo = snap.get("cluster_algo")
+    if vm != _SUPPORTED_VEC_MODE or algo != _SUPPORTED_ALGO:
+        raise NotImplementedError(_STAGES_NOT_PORTED_MSG.format(combo=_combo(snap)))
+
+
+# ---------------------------------------------------------------------------
+# Wave 3a slice — TF-IDF + KMeans implementation
+# ---------------------------------------------------------------------------
+# The Tk-bound run_cluster() in app_cluster.py supports many more vec_modes
+# (sbert/combo/ensemble) and algos (hdbscan/bertopic/lda/fastopic). Porting
+# all of them in one PR is a multi-day refactor — see ADR-0007. This slice
+# implements only the simplest path so the headless CLI can run end-to-end
+# for the most common case (TF-IDF + KMeans on a single text column).
+#
+# Out of scope for the slice:
+#   - Role-aware text composition (use_summary, ignore_chatbot_cluster).
+#     We read a single text_col from each input file and concatenate.
+#   - Dedup, stop-word lists, T5 summarisation, MLM features.
+#   - Incremental-model fast path (cluster_incremental_service).
+#   - LLM cluster naming, merge-similar-clusters, silhouette diagnostics.
+#   - GPU KMeans (cuML); we always use sklearn's MiniBatchKMeans.
+# These remain reachable through the Tk path until further slices land.
+
+
+def _read_texts(files_snapshot: Sequence[str], text_col: str) -> List[str]:
+    """Read ``text_col`` from each file in ``files_snapshot``, concatenated."""
+    from pathlib import Path as _Path
+
+    from excel_utils import open_tabular
+
+    texts: List[str] = []
+    for raw_path in files_snapshot:
+        path = _Path(raw_path)
+        with open_tabular(path) as rows:
+            try:
+                header = next(rows)
+            except StopIteration:
+                continue
+            normalised = [
+                "" if h is None else str(h).strip() for h in header
+            ]
+            try:
+                idx = normalised.index(text_col)
+            except ValueError:
+                raise ValueError(
+                    f"Column {text_col!r} not found in {path.name}; "
+                    f"available: {normalised}"
+                )
+            for row in rows:
+                if idx >= len(row):
+                    continue
+                cell = row[idx]
+                if cell is None:
+                    continue
+                s = str(cell).strip()
+                if s:
+                    texts.append(s)
+    return texts
+
+
+def _adaptive_min_df(n_rows: int) -> int:
+    """Mirror the inline adaptive-min_df rule in run_cluster (line ~3088)."""
+    if n_rows < 5_000:
+        return 1
+    if n_rows < 50_000:
+        return 2
+    return 3
 
 
 def build_vectors(prepared: PreparedInputs, snap: Mapping[str, object]) -> VectorPack:
-    """Stage 2 (NOT PORTED): produce sample × feature vectors.
+    """Stage 2: produce a TF-IDF sample × feature matrix.
 
-    Must return a populated ``VectorPack.vectors`` (e.g. ``scipy.sparse``
-    matrix for TF-IDF or ``np.ndarray`` for SBERT). The previous stub
-    returned ``vectors=None`` with ``meta={"snap": ...}``, which mimicked
-    the shape of a real call while silently dropping the computation —
-    that pretence is removed in favour of an explicit failure until the
-    Wave 3a port of ``run_cluster()``'s Stage-2 block lands.
+    Slice-port: only ``snap['cluster_vec_mode'] == 'tfidf'`` is supported;
+    other modes raise ``NotImplementedError`` with the offending combo
+    named so the caller can route to the Tk path.
     """
-    _ = (prepared, snap)  # kept for signature stability against the future port.
-    raise NotImplementedError(_STAGES_NOT_PORTED_MSG.format(name="build_vectors"))
+    _require_supported_combo(snap)
+
+    from sklearn.feature_extraction.text import TfidfVectorizer
+
+    text_col_obj = snap.get("text_col")
+    if not isinstance(text_col_obj, str) or not text_col_obj.strip():
+        raise ValueError(
+            "build_vectors requires snap['text_col'] (string, non-empty); "
+            "the Tk path derives this from role-aware UI state, the slice does not."
+        )
+    text_col = text_col_obj.strip()
+
+    texts = _read_texts(prepared.files_snapshot, text_col)
+    if len(texts) < 2:
+        raise ValueError(
+            f"Need at least 2 non-empty rows in column {text_col!r}, got {len(texts)}"
+        )
+
+    user_min_df_obj = snap.get("cluster_min_df", 0)
+    user_min_df = int(user_min_df_obj) if isinstance(user_min_df_obj, (int, float)) else 0
+    min_df = user_min_df if user_min_df > 0 else _adaptive_min_df(len(texts))
+
+    max_features_obj = snap.get("cluster_max_features", 50_000)
+    max_features = int(max_features_obj) if isinstance(max_features_obj, (int, float)) else 50_000
+
+    vec = TfidfVectorizer(
+        analyzer="word",
+        ngram_range=(1, 2),
+        min_df=min_df,
+        max_features=max_features,
+        sublinear_tf=True,
+    )
+    matrix = vec.fit_transform(texts)
+    return VectorPack(
+        prepared=prepared,
+        vectors=matrix,
+        meta={"vectorizer": vec, "texts": texts, "min_df": min_df},
+    )
 
 
 def run_clustering(vectors: VectorPack, snap: Mapping[str, object]) -> ClusterResult:
-    """Stage 3 (NOT PORTED): fit a clustering algorithm and predict labels.
+    """Stage 3: fit MiniBatchKMeans on the TF-IDF matrix.
 
-    Must return a populated ``ClusterResult.labels`` matching the algo
-    branch selected via ``snap['cluster_algo']`` (kmeans / hdbscan /
-    bertopic / lda / fastopic). The previous stub returned ``labels=None``.
+    Slice-port: only ``snap['cluster_algo'] == 'kmeans'`` is supported.
+    Cuml/GPU KMeans is intentionally not wired in the slice — the Tk path
+    keeps that branch via cluster_algo_strategy.gpu_kmeans.
     """
-    _ = (vectors, snap)
-    raise NotImplementedError(_STAGES_NOT_PORTED_MSG.format(name="run_clustering"))
+    _require_supported_combo(snap)
+    if vectors.vectors is None:
+        raise ValueError("run_clustering: VectorPack.vectors is None")
+
+    from sklearn.cluster import MiniBatchKMeans
+
+    k_obj = snap.get("k_clusters")
+    if not isinstance(k_obj, (int, float)) or int(k_obj) < 2:
+        raise ValueError(
+            "run_clustering requires snap['k_clusters'] >= 2 for kmeans"
+        )
+    k = int(k_obj)
+
+    n_init_obj = snap.get("n_init_cluster", 10)
+    n_init = int(n_init_obj) if isinstance(n_init_obj, (int, float)) else 10
+    seed_obj = snap.get("random_state", 42)
+    seed = int(seed_obj) if isinstance(seed_obj, (int, float)) else 42
+
+    n_rows = vectors.vectors.shape[0]
+    if k > n_rows:
+        raise ValueError(
+            f"k_clusters={k} exceeds row count {n_rows}; pick a smaller K"
+        )
+
+    model = MiniBatchKMeans(
+        n_clusters=k,
+        random_state=seed,
+        batch_size=1024,
+        n_init=n_init,
+        init="k-means++",
+        max_iter=300,
+    )
+    labels = model.fit_predict(vectors.vectors)
+    return ClusterResult(
+        vectors=vectors,
+        labels=labels,
+        meta={"K": k, "algo": _SUPPORTED_ALGO, "model": model},
+    )
+
+
+def _cluster_keywords(
+    matrix: object, labels: object, vectorizer: object, *, top_n: int = 5
+) -> dict[int, List[str]]:
+    """Top-N centroid keywords per cluster (mean TF-IDF weight)."""
+    import numpy as _np
+
+    feature_names = vectorizer.get_feature_names_out()  # type: ignore[attr-defined]
+    label_arr = _np.asarray(labels)
+    out: dict[int, List[str]] = {}
+    for cid in _np.unique(label_arr):
+        if cid < 0:
+            continue
+        mask = label_arr == cid
+        if not mask.any():
+            continue
+        # Sparse-row mean → 1×F matrix → flatten to ndarray.
+        cluster_mean = _np.asarray(matrix[mask].mean(axis=0)).ravel()  # type: ignore[index]
+        top_idx = _np.argsort(cluster_mean)[::-1][:top_n]
+        out[int(cid)] = [str(feature_names[i]) for i in top_idx]
+    return out
 
 
 def postprocess_clusters(
@@ -252,17 +428,85 @@ def postprocess_clusters(
     prepared: PreparedInputs,
     snap: Mapping[str, object],
 ) -> PostprocessResult:
-    """Stage 4 (NOT PORTED): merge + name + diagnose clusters.
+    """Stage 4: minimal — cluster sizes + centroid keywords.
 
-    Must return a populated ``PostprocessResult.payload`` with merged
-    labels, cluster names (LLM or centroid-keyword), and diagnostics
-    (silhouette / representative texts / noise share).
+    Slice-port: no LLM naming, no merge-similar-clusters, no silhouette.
+    The Tk path's diagnostics live in ml_diagnostics; porting them is a
+    follow-up slice once the matrix of algos is stable.
     """
-    _ = (result, prepared, snap)
-    raise NotImplementedError(_STAGES_NOT_PORTED_MSG.format(name="postprocess_clusters"))
+    _require_supported_combo(snap)
+    if result.labels is None or result.vectors.vectors is None:
+        raise ValueError("postprocess_clusters: missing labels or vectors")
+
+    import numpy as _np
+
+    labels = _np.asarray(result.labels)
+    sizes: dict[int, int] = {
+        int(cid): int(count)
+        for cid, count in zip(*_np.unique(labels, return_counts=True))
+    }
+    vec_meta = result.vectors.meta or {}
+    keywords = _cluster_keywords(
+        result.vectors.vectors, labels, vec_meta["vectorizer"],
+    )
+    payload: dict[str, object] = {
+        "prepared": prepared,
+        "snap": _as_cluster_snapshot(snap),
+        "cluster_sizes": sizes,
+        "cluster_keywords": keywords,
+        "texts": vec_meta.get("texts", []),
+        "labels": labels,
+    }
+    return PostprocessResult(result=result, payload=payload)  # type: ignore[arg-type]
 
 
-def export_cluster_outputs(postprocessed: PostprocessResult, snap: Mapping[str, object]) -> ExportSummary:
-    """Stage 5 (NOT PORTED): write XLSX/CSV outputs with per-row cluster assignments."""
-    _ = (postprocessed, snap)
+def export_cluster_outputs(
+    postprocessed: PostprocessResult, snap: Mapping[str, object]
+) -> ExportSummary:
+    """Stage 5: write a CSV with (text, cluster_id, top_keywords) per row.
+
+    Slice-port: CSV only (no XLSX); ``snap['output_path']`` is required.
+    The Tk path's XLSX exporter (with summary sheet) is a follow-up.
+    """
+    _require_supported_combo(snap)
+    if postprocessed.payload is None:
+        raise ValueError("export_cluster_outputs: postprocessed payload is None")
+
+    out_obj = snap.get("output_path")
+    if not isinstance(out_obj, str) or not out_obj.strip():
+        raise ValueError(
+            "export_cluster_outputs requires snap['output_path'] (string, .csv)"
+        )
+    from pathlib import Path as _Path
+
+    out_path = _Path(out_obj.strip())
+    if out_path.suffix.lower() != ".csv":
+        raise ValueError(
+            f"Slice-port writes CSV only; got suffix {out_path.suffix!r}"
+        )
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    payload = postprocessed.payload  # type: ignore[assignment]
+    texts: Sequence[str] = payload["texts"]  # type: ignore[index]
+    labels = payload["labels"]  # type: ignore[index]
+    keywords: dict[int, List[str]] = payload["cluster_keywords"]  # type: ignore[index]
+
+    import csv as _csv
+
+    written = 0
+    with out_path.open("w", encoding="utf-8", newline="") as fh:
+        writer = _csv.writer(fh)
+        writer.writerow(["text", "cluster_id", "top_keywords"])
+        for text, cid in zip(texts, labels):
+            cid_i = int(cid)
+            kw = ",".join(keywords.get(cid_i, []))
+            writer.writerow([text, cid_i, kw])
+            written += 1
+
+    outputs: dict[str, object] = {
+        "snap": _as_cluster_snapshot(snap),
+        "out_path": str(out_path),
+        "rows_written": written,
+    }
+    return ExportSummary(postprocessed=postprocessed, outputs=outputs)  # type: ignore[arg-type]
     raise NotImplementedError(_STAGES_NOT_PORTED_MSG.format(name="export_cluster_outputs"))
