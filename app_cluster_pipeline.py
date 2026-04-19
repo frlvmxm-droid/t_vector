@@ -222,19 +222,22 @@ def prepare_inputs(files_snapshot: List[str], snap: Mapping[str, object]) -> Pre
 
 _STAGES_NOT_PORTED_MSG = (
     "Pipeline combo {combo!r} is not yet ported. The Wave 3a slice ships "
-    "vec_mode='tfidf' + algo in {{'kmeans','agglo','lda','hdbscan'}} and "
-    "vec_mode='sbert' + algo='kmeans' end-to-end; other combinations still "
-    "live inside app_cluster.run_cluster() (ADR-0002 tracks the full "
-    "migration). Either select a supported combo or call the Tk-bound "
-    "run_cluster() until this branch is ported."
+    "vec_mode='tfidf' + algo in {{'kmeans','agglo','lda','hdbscan'}}, "
+    "vec_mode='sbert' + algo='kmeans', and vec_mode='combo' + algo='kmeans' "
+    "end-to-end; other combinations still live inside "
+    "app_cluster.run_cluster() (ADR-0002 tracks the full migration). Either "
+    "select a supported combo or call the Tk-bound run_cluster() until this "
+    "branch is ported."
 )
 
-_SUPPORTED_VEC_MODES = ("tfidf", "sbert")
+_SUPPORTED_VEC_MODES = ("tfidf", "sbert", "combo")
 _SUPPORTED_ALGOS = ("kmeans", "agglo", "lda", "hdbscan")
-# sbert only supports kmeans in the slice — the Tk path additionally
-# supports hdbscan/agglo on SBERT vectors but the combinatorics aren't
-# needed for the first port and each adds its own density/linkage quirks.
+# sbert and combo currently pair only with kmeans. The Tk path does run
+# hdbscan/agglo on dense SBERT / combo vectors, but porting those would
+# pull in SBERT-specific density heuristics + anchor handling for combo;
+# they are deferred to later sub-commits.
 _SUPPORTED_SBERT_ALGOS = ("kmeans",)
+_SUPPORTED_COMBO_ALGOS = ("kmeans",)
 # Agglomerative needs dense input; cap n_rows to keep O(n²) memory bounded.
 _AGGLO_MAX_ROWS = 5_000
 
@@ -249,6 +252,8 @@ def _require_supported_combo(snap: Mapping[str, object]) -> None:
     if vm not in _SUPPORTED_VEC_MODES or algo not in _SUPPORTED_ALGOS:
         raise NotImplementedError(_STAGES_NOT_PORTED_MSG.format(combo=_combo(snap)))
     if vm == "sbert" and algo not in _SUPPORTED_SBERT_ALGOS:
+        raise NotImplementedError(_STAGES_NOT_PORTED_MSG.format(combo=_combo(snap)))
+    if vm == "combo" and algo not in _SUPPORTED_COMBO_ALGOS:
         raise NotImplementedError(_STAGES_NOT_PORTED_MSG.format(combo=_combo(snap)))
 
 
@@ -381,6 +386,52 @@ def build_vectors(prepared: PreparedInputs, snap: Mapping[str, object]) -> Vecto
         )
         clustering_matrix = sbert.fit_transform(texts)
         clustering_vectorizer: object = sbert
+    elif vec_mode == "combo":
+        # Mirrors app_cluster.py:3622-3662 — TF-IDF → TruncatedSVD → L2 +
+        # SBERT → L2, hstack with α weight. The Tk path puts the combo
+        # behind a mouse-driven α slider; here we just read it from snap.
+        import numpy as _np
+        from sklearn.decomposition import TruncatedSVD
+        from sklearn.preprocessing import normalize as _sk_normalize
+
+        from ml_vectorizers import SBERTVectorizer
+
+        svd_dim_obj = snap.get("combo_svd_dim", 200)
+        svd_dim_req = int(svd_dim_obj) if isinstance(svd_dim_obj, (int, float)) else 200
+        # SVD requires n_components < min(n_samples, n_features); floor at 10
+        # so the combo matrix has enough spread to separate clusters.
+        svd_dim = max(10, min(svd_dim_req, tfidf_matrix.shape[1] - 1, tfidf_matrix.shape[0] - 1))
+
+        seed_obj = snap.get("random_state", 42)
+        seed = int(seed_obj) if isinstance(seed_obj, (int, float)) else 42
+        svd = TruncatedSVD(n_components=svd_dim, random_state=seed)
+        tfidf_reduced = svd.fit_transform(tfidf_matrix)
+        tfidf_norm = _sk_normalize(tfidf_reduced, norm="l2")
+
+        model_name_obj = snap.get("sbert_model", "cointegrated/rubert-tiny2")
+        model_name = str(model_name_obj) if model_name_obj else "cointegrated/rubert-tiny2"
+        batch_obj = snap.get("sbert_batch", 32)
+        batch_size = int(batch_obj) if isinstance(batch_obj, (int, float)) else 32
+        device_obj = snap.get("sbert_device", "auto")
+        device = str(device_obj) if device_obj else "auto"
+        sbert = SBERTVectorizer(
+            model_name=model_name, batch_size=batch_size, device=device,
+        )
+        sbert_matrix = sbert.fit_transform(texts)
+        sbert_norm = _sk_normalize(sbert_matrix, norm="l2")
+
+        alpha_obj = snap.get("combo_alpha", 0.5)
+        alpha = float(alpha_obj) if isinstance(alpha_obj, (int, float)) else 0.5
+        # Clamp α to [0, 1] so misconfigured snapshots can't flip the sign
+        # (the Tk UI slider does the same at the widget level).
+        alpha = max(0.0, min(1.0, alpha))
+        clustering_matrix = _np.hstack([
+            tfidf_norm * (1.0 - alpha),
+            sbert_norm * alpha,
+        ])
+        clustering_vectorizer = {
+            "svd": svd, "sbert": sbert, "alpha": alpha, "svd_dim": svd_dim,
+        }
     elif algo == "lda":
         count_vec = CountVectorizer(
             analyzer="word",

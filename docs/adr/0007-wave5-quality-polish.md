@@ -254,19 +254,23 @@ drift at each step:
    did not break externally-visible behavior.
 
 Wave 7.1 (safety net) is Complete. 7.2 (`tfidf+lda`), 7.3
-(`tfidf+hdbscan`) and 7.4 (`sbert+kmeans`) **shipped** — each adds one
-combo branch to `build_vectors` / `run_clustering` + a full-pipeline
-CLI smoke test. `_SUPPORTED_VEC_MODES = ("tfidf", "sbert")`,
-`_SUPPORTED_ALGOS = ("kmeans", "agglo", "lda", "hdbscan")`, with
-the constraint that `sbert` pairs only with `kmeans` in the slice.
-Meta on `VectorPack` now always carries `keyword_matrix` +
-`keyword_vectorizer` (TF-IDF) so `postprocess_clusters` yields
-TF-IDF-weighted keywords regardless of what fed clustering (Count for
-LDA, dense SBERT embeddings for the neural path, TF-IDF for everything
-else). Wave 7.5 (`combo` / `ensemble` vec_modes — SVD blending, anchors,
-ensemble voting) is the remaining stage 2 work before step (2) can
-start; deferred to a dedicated session because the composite paths
-need their own safety-net expansion (alpha sweep, anchor round-trip).
+(`tfidf+hdbscan`), 7.4 (`sbert+kmeans`) and **7.5a (`combo+kmeans`)
+shipped** — each adds one branch to `build_vectors` / `run_clustering`
+plus a full-pipeline CLI smoke test. `_SUPPORTED_VEC_MODES =
+("tfidf", "sbert", "combo")`, `_SUPPORTED_ALGOS = ("kmeans", "agglo",
+"lda", "hdbscan")`, with the constraint that `sbert` and `combo` each
+pair only with `kmeans` in the slice. Meta on `VectorPack` always
+carries `keyword_matrix` + `keyword_vectorizer` (TF-IDF) so
+`postprocess_clusters` yields TF-IDF-weighted keywords regardless of
+what fed clustering (Count for LDA, dense SBERT embeddings for the
+neural path, the hstacked TF-IDF-SVD + SBERT matrix for combo, TF-IDF
+for everything else). Combo uses `combo_svd_dim` (default 200, clamped
+to `min(n_rows-1, n_features-1)`) and `combo_alpha` (clamped to 0..1)
+from snap; the Tk UI slider does the same clamp at widget level.
+Wave 7.5b (`ensemble` vec_mode — multi-round voting) is the remaining
+stage 2 work before step (2) can start; deferred because porting it
+pulls in the K-fold consensus logic + stage-3-like cluster-merging
+that isn't covered by the current pipeline contract.
 
 ### Wave 7 (full run_cluster decomposition) — still deferred
 Investigation in this wave confirmed Wave 7.2/7.3 (extract stages 2–3

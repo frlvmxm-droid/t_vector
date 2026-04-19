@@ -159,12 +159,13 @@ def _write_apply_output(
 # Subcommand: cluster
 # ---------------------------------------------------------------------------
 
-_CLUSTER_SUPPORTED_VEC_MODES = ("tfidf", "sbert")
+_CLUSTER_SUPPORTED_VEC_MODES = ("tfidf", "sbert", "combo")
 _CLUSTER_SUPPORTED_ALGOS = ("kmeans", "agglo", "lda", "hdbscan")
-# sbert only pairs with kmeans in the slice; other combos still route to
-# the prepare-inputs skeleton so users don't accidentally hit half-ported
-# paths (see ADR-0007).
+# sbert/combo pair only with kmeans in the slice; other pairings still
+# route to the prepare-inputs skeleton so users don't accidentally hit
+# half-ported paths (see ADR-0007).
 _CLUSTER_SUPPORTED_SBERT_ALGOS = ("kmeans",)
+_CLUSTER_SUPPORTED_COMBO_ALGOS = ("kmeans",)
 
 
 def _is_supported_cluster_combo(snap: Dict[str, Any]) -> bool:
@@ -173,6 +174,8 @@ def _is_supported_cluster_combo(snap: Dict[str, Any]) -> bool:
     if vm not in _CLUSTER_SUPPORTED_VEC_MODES or algo not in _CLUSTER_SUPPORTED_ALGOS:
         return False
     if vm == "sbert" and algo not in _CLUSTER_SUPPORTED_SBERT_ALGOS:
+        return False
+    if vm == "combo" and algo not in _CLUSTER_SUPPORTED_COMBO_ALGOS:
         return False
     return True
 
@@ -207,7 +210,7 @@ def cmd_cluster(args: argparse.Namespace) -> int:
                 "or pick cluster_vec_mode in "
                 f"{list(_CLUSTER_SUPPORTED_VEC_MODES)} + cluster_algo in "
                 f"{list(_CLUSTER_SUPPORTED_ALGOS)} "
-                "(sbert pairs only with kmeans)."
+                "(sbert and combo each pair only with kmeans)."
             )
             return 2
         prepared = ClusteringWorkflow.prepare_only(
