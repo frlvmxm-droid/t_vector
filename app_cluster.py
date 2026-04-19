@@ -78,12 +78,6 @@ from app_cluster_service import (
 )
 from cluster_ui_builder import build_cluster_primary_sections
 from cluster_run_coordinator import prepare_cluster_run_context
-from cluster_run_stages import (
-    snapshot_stage1,
-    snapshot_stage2,
-    snapshot_stage3,
-    snapshot_stage4,
-)
 from app_cluster_pipeline import (
     build_t5_source_text,
     prepare_inputs,
@@ -1904,18 +1898,8 @@ class ClusterTabMixin:
 
         ``slots=True`` отказывается от динамических полей — опечатка вида
         ``_crs.labls = ...`` (вместо ``labels``) сразу бросает
-        ``AttributeError`` вместо тихого создания левого атрибута. Это
-        дешёвое усиление дисциплины до полноценной миграции на
-        ``frozen=True`` (плановый Wave 3b; см. ADR-0003).
-
-        Frozen-snapshots стадий (источник истины на границах) доступны
-        через :mod:`cluster_run_stages`:
-
-            from cluster_run_stages import (
-                snapshot_stage1, snapshot_stage2,
-                snapshot_stage3, snapshot_stage4,
-            )
-            s1 = snapshot_stage1(_crs)   # frozen Stage1InputSnapshot
+        ``AttributeError`` вместо тихого создания левого атрибута.
+        Frozen-snapshots стадий доступны через :mod:`cluster_run_stages`.
         """
         # Инициализируется в worker()
         in_paths: list = _dc_field(default_factory=list)
@@ -3414,11 +3398,6 @@ class ClusterTabMixin:
                 raw_texts_all = _crs.raw_texts_all
                 done = _crs.done
                 n_ok = _crs.n_ok
-                # Capture a frozen projection at the Stage-1 boundary.
-                # This is the service-layer handoff point that ADR-0002
-                # promises; without it the frozen snapshot types were
-                # never exercised in production.
-                self._last_stage1_snapshot = snapshot_stage1(_crs)
 
                 # СТАДИЯ 2: Векторизация (TF-IDF / SBERT / combo / ensemble) и кластеризация
                 # ═══════════════════════════════════════════════════════════════
@@ -4123,13 +4102,6 @@ class ClusterTabMixin:
 
                 self.after(0, lambda: ui_prog(88.0, "Keywords…"))
 
-                # Capture a frozen projection at the Stage-2 boundary — see
-                # Stage-1 comment above. The worker still mutates `_crs`
-                # in place, but the snapshot is the immutable hand-off.
-                _crs.labels = labels
-                _crs.Xv = Xv
-                self._last_stage2_snapshot = snapshot_stage2(_crs)
-
                 # ═══════════════════════════════════════════════════════════════
                 # СТАДИЯ 3: Постобработка — ключевые слова, LLM-нейминг, качество
                 # ═══════════════════════════════════════════════════════════════
@@ -4195,18 +4167,6 @@ class ClusterTabMixin:
                 self._cluster_step_plotly(snap, Xv, labels, X_clean)
                 self._cluster_step_t5(snap, raw_texts_all, t5_summaries_all)
 
-                # Capture a frozen projection at the Stage-3 boundary. We
-                # checkpoint the mutation surface below, but the snapshot
-                # is what the service layer / tests should read.
-                _crs.labels = labels
-                _crs.kw_dict = kw_dict
-                _crs.cluster_name_map = cluster_name_map
-                _crs.cluster_reason_map = cluster_reason_map
-                _crs.cluster_quality_map = cluster_quality_map
-                _crs.llm_feedback_map = llm_feedback_map
-                _crs.t5_summaries_all = t5_summaries_all
-                self._last_stage3_snapshot = snapshot_stage3(_crs)
-
                 # ═══════════════════════════════════════════════════════════════
                 # СТАДИЯ 4: Экспорт результатов в XLSX, сводная таблица
                 # ═══════════════════════════════════════════════════════════════
@@ -4223,10 +4183,6 @@ class ClusterTabMixin:
                 _crs.labels_l1 = labels_l1
                 _crs.noise_labels = noise_labels
                 _crs.K = K
-                # Capture a frozen projection at the Stage-4 boundary,
-                # immediately before export — last point where the
-                # running state is still stable.
-                self._last_stage4_snapshot = snapshot_stage4(_crs)
                 self._cluster_worker_stage4(_crs, snap, t0, ui_prog, _lifecycle)
 
             except InterruptedError:

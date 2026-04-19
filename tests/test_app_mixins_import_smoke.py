@@ -16,40 +16,11 @@ necessary) and ``hasattr`` checks — it never calls the methods.
 from __future__ import annotations
 
 import importlib
-import importlib.util as _ilu
-import sys
-from unittest.mock import MagicMock
 
 import pytest
 
 
-# ---------------------------------------------------------------------------
-# Tk stubbing — only when tkinter is not actually available on this runner.
-# ---------------------------------------------------------------------------
-
-def _make_mock(name: str) -> MagicMock:
-    m = MagicMock()
-    m.__name__ = name
-    m.__spec__ = MagicMock()
-    return m
-
-
-def _needs_mock(name: str) -> bool:
-    root = name.split(".")[0]
-    return _ilu.find_spec(root) is None
-
-
-for _mod in (
-    "tkinter",
-    "tkinter.ttk",
-    "tkinter.filedialog",
-    "tkinter.messagebox",
-    "ui_theme",
-    "ui_widgets",
-    "customtkinter",
-):
-    if _mod not in sys.modules and _needs_mock(_mod):
-        sys.modules[_mod] = _make_mock(_mod)
+# Tkinter is stubbed in tests/conftest.py at collection time.
 
 
 # ---------------------------------------------------------------------------
