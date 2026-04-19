@@ -156,7 +156,7 @@ jobs:
             "scikit-learn>=1.4" "numpy>=1.24" "scipy>=1.11" \
             "joblib>=1.3" "openpyxl>=3.1" "pandas>=2.1" \
             "cryptography>=42.0" "psutil>=5.9" \
-            pytest pytest-cov
+            pytest pytest-cov hypothesis
 
       - name: Run tests with coverage
         env:
@@ -178,3 +178,37 @@ jobs:
           name: coverage-xml
           path: coverage.xml
           if-no-files-found: warn
+
+  ui-smoke:
+    name: UI smoke (Xvfb + customtkinter)
+    runs-on: ubuntu-latest
+    # Изолирован от основного matrix-а: Tk-стек тяжёлый, customtkinter
+    # подтягивает Pillow и shared libs. Гейт «доказывает что мixin-ы
+    # переживают runtime-init», а не функциональное покрытие.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install Xvfb + Tk
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y xvfb python3-tk
+
+      - name: Install UI deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install \
+            "scikit-learn>=1.4" "numpy>=1.24" "scipy>=1.11" \
+            "joblib>=1.3" "openpyxl>=3.1" "pandas>=2.1" \
+            "cryptography>=42.0" "psutil>=5.9" \
+            customtkinter pytest
+
+      - name: Run UI smoke under Xvfb
+        env:
+          PYTHONPATH: .
+          BRT_LLM_PROVIDER: offline
+        run: xvfb-run -a pytest tests/test_ui_smoke.py -v
