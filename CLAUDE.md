@@ -49,28 +49,33 @@ python -m bank_reason_trainer apply \
     --model model.joblib --data in.xlsx --out out.xlsx \
     --text-col text [--threshold 0.5]
 
-# Cluster: TF-IDF + MiniBatchKMeans or AgglomerativeClustering
-# (Wave 3a slice — real end-to-end)
+# Cluster: TF-IDF + {KMeans | Agglomerative | LDA | HDBSCAN}, or
+# SBERT + KMeans (Wave 3a slice + 7.2/7.3/7.4 extensions — real end-to-end)
 python -m bank_reason_trainer cluster --files a.xlsx b.xlsx \
     --out clusters.csv --text-col text --k-clusters 8
 # Pick algo via snap: {"cluster_vec_mode": "tfidf", "cluster_algo": "agglo"}
+# or:                 {"cluster_vec_mode": "sbert", "cluster_algo": "kmeans",
+#                      "sbert_model": "cointegrated/rubert-tiny2"}
 
-# Cluster: other combos (sbert/setfit/hdbscan/lda) still need
-# --allow-skeleton; only prepare_inputs runs, the rest live inside
-# the Tk-bound app_cluster.run_cluster() until they are ported.
+# Cluster: other combos (setfit / BERTopic / fastopic / combo / ensemble)
+# still need --allow-skeleton; only prepare_inputs runs, the rest live
+# inside the Tk-bound app_cluster.run_cluster() until they are ported.
 python -m bank_reason_trainer cluster --files a.xlsx b.xlsx \
-    --snap sbert_snap.json --allow-skeleton
+    --snap combo_snap.json --allow-skeleton
 ```
 
 `train` and `apply` are real (Wave 8.3): TF-IDF features, joblib bundle
-round-trip, CSV/XLSX I/O. `cluster`'s `tfidf` + `kmeans|agglo` combos are
-real end-to-end after the Wave 3a slice port — they stream text from
-`--files`, fit a TF-IDF vectorizer + the chosen clusterer, and write
+round-trip, CSV/XLSX I/O. `cluster` is real end-to-end for
+`tfidf` + {`kmeans`, `agglo`, `lda`, `hdbscan`} and `sbert` + `kmeans`
+after the Wave 3a slice port + Wave 7.2–7.4 extensions — they stream
+text from `--files`, fit the chosen vectorizer + clusterer, and write
 `text,cluster_id,top_keywords` to `--out`. Agglomerative is capped at
-5 000 rows (Ward linkage is O(n²) in memory). Other combos (SBERT,
-SetFit, HDBSCAN, LDA, BERTopic) still raise `NotImplementedError` and
-require `--allow-skeleton` for the prepare-only fallback — see
-`docs/adr/0002-pipeline-stages-and-snapshots.md` and
+5 000 rows (Ward linkage is O(n²) in memory); HDBSCAN discovers K itself
+(the `--k-clusters` flag is ignored); SBERT downloads the model from
+HuggingFace Hub on first run (cached in `SBERT_LOCAL_DIR`). Other combos
+(BERTopic, SetFit, FASTopic, `combo`, `ensemble`) still raise
+`NotImplementedError` and require `--allow-skeleton` for the prepare-only
+fallback — see `docs/adr/0002-pipeline-stages-and-snapshots.md` and
 `docs/adr/0007-wave5-quality-polish.md`.
 
 ---

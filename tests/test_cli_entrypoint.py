@@ -254,6 +254,80 @@ def test_cluster_agglo_combo_runs_full_pipeline(tmp_path, capsys):
     assert cluster_ids <= {"0", "1"}
 
 
+def test_cluster_sbert_kmeans_combo_runs_full_pipeline(tmp_path, capsys, monkeypatch):
+    """Slice extension: sbert + kmeans. SBERTVectorizer is stubbed to return
+    deterministic embeddings so the test stays offline (real model download
+    happens via ml_sbert_bootstrap which requires HF Hub / cache)."""
+    import csv as _csv
+    import numpy as _np
+
+    # Stub SBERTVectorizer.fit_transform to return a deterministic 8-dim
+    # embedding derived from text hashing. This sidesteps the sentence-
+    # transformers download + torch wiring and is faithful to how the
+    # pipeline uses the vectorizer (fit_transform → dense matrix, KMeans).
+    class _StubSBERT:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def fit_transform(self, texts):
+            rng = _np.random.default_rng(42)
+            # Two distinct centroids; bucket by a keyword match so clustering
+            # actually recovers the two topics.
+            out = []
+            for t in texts:
+                base = rng.standard_normal(8) * 0.1
+                if "перевод" in t.lower():
+                    base += _np.array([1.0, 0, 0, 0, 0, 0, 0, 0])
+                else:
+                    base += _np.array([0, 0, 0, 0, 1.0, 0, 0, 0])
+                out.append(base)
+            return _np.asarray(out, dtype=_np.float32)
+
+    monkeypatch.setattr("ml_vectorizers.SBERTVectorizer", _StubSBERT)
+
+    snap_path = tmp_path / "snap.json"
+    snap_path.write_text(
+        json.dumps({
+            "cluster_vec_mode": "sbert", "cluster_algo": "kmeans",
+            "sbert_model": "cointegrated/rubert-tiny2",
+            "sbert_batch": 8, "sbert_device": "cpu",
+        }),
+        encoding="utf-8",
+    )
+
+    inp = tmp_path / "in.csv"
+    out = tmp_path / "out.csv"
+    rows = [
+        "перевод денег срочно", "блокировка карты сегодня",
+        "перевод на счёт", "карта заблокирована вчера",
+        "перевести деньги", "разблокировать карту",
+        "отправить перевод", "карта блок",
+    ]
+    with inp.open("w", encoding="utf-8", newline="") as f:
+        w = _csv.writer(f)
+        w.writerow(["text"])
+        for r in rows:
+            w.writerow([r])
+
+    rc = main([
+        "cluster", "--files", str(inp), "--out", str(out),
+        "--snap", str(snap_path),
+        "--text-col", "text", "--k-clusters", "2",
+    ])
+    assert rc == 0, capsys.readouterr().err
+    parsed = json.loads(capsys.readouterr().out)
+    assert parsed["stage"] == "export_cluster_outputs"
+    # K=2 requested; with the stubbed embeddings it should be exactly 2.
+    assert parsed["k_clusters_found"] == 2
+
+    with out.open() as f:
+        reader = list(_csv.reader(f))
+    assert reader[0] == ["text", "cluster_id", "top_keywords"]
+    assert len(reader) == 1 + len(rows)
+    cluster_ids = {row[1] for row in reader[1:]}
+    assert cluster_ids <= {"0", "1"}
+
+
 def test_cluster_hdbscan_combo_runs_full_pipeline(tmp_path, capsys):
     """Slice extension: tfidf + HDBSCAN (density-based; K is discovered,
     not requested). Noise label -1 is permitted; the XLSX writer still

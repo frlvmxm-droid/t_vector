@@ -221,16 +221,20 @@ def prepare_inputs(files_snapshot: List[str], snap: Mapping[str, object]) -> Pre
 
 
 _STAGES_NOT_PORTED_MSG = (
-    "Pipeline combo {combo!r} is not yet ported. Wave 3a slice ships "
-    "vec_mode='tfidf' + algo in {{'kmeans', 'agglo', 'lda', 'hdbscan'}} "
-    "end-to-end; other combinations still live inside "
-    "app_cluster.run_cluster() (ADR-0002 tracks the full migration). Either "
-    "select a supported combo or call the Tk-bound run_cluster() until this "
-    "branch is ported."
+    "Pipeline combo {combo!r} is not yet ported. The Wave 3a slice ships "
+    "vec_mode='tfidf' + algo in {{'kmeans','agglo','lda','hdbscan'}} and "
+    "vec_mode='sbert' + algo='kmeans' end-to-end; other combinations still "
+    "live inside app_cluster.run_cluster() (ADR-0002 tracks the full "
+    "migration). Either select a supported combo or call the Tk-bound "
+    "run_cluster() until this branch is ported."
 )
 
-_SUPPORTED_VEC_MODE = "tfidf"
+_SUPPORTED_VEC_MODES = ("tfidf", "sbert")
 _SUPPORTED_ALGOS = ("kmeans", "agglo", "lda", "hdbscan")
+# sbert only supports kmeans in the slice — the Tk path additionally
+# supports hdbscan/agglo on SBERT vectors but the combinatorics aren't
+# needed for the first port and each adds its own density/linkage quirks.
+_SUPPORTED_SBERT_ALGOS = ("kmeans",)
 # Agglomerative needs dense input; cap n_rows to keep O(n²) memory bounded.
 _AGGLO_MAX_ROWS = 5_000
 
@@ -242,7 +246,9 @@ def _combo(snap: Mapping[str, object]) -> str:
 def _require_supported_combo(snap: Mapping[str, object]) -> None:
     vm = snap.get("cluster_vec_mode")
     algo = snap.get("cluster_algo")
-    if vm != _SUPPORTED_VEC_MODE or algo not in _SUPPORTED_ALGOS:
+    if vm not in _SUPPORTED_VEC_MODES or algo not in _SUPPORTED_ALGOS:
+        raise NotImplementedError(_STAGES_NOT_PORTED_MSG.format(combo=_combo(snap)))
+    if vm == "sbert" and algo not in _SUPPORTED_SBERT_ALGOS:
         raise NotImplementedError(_STAGES_NOT_PORTED_MSG.format(combo=_combo(snap)))
 
 
@@ -353,8 +359,29 @@ def build_vectors(prepared: PreparedInputs, snap: Mapping[str, object]) -> Vecto
     )
     tfidf_matrix = tfidf_vec.fit_transform(texts)
 
+    vec_mode = str(snap.get("cluster_vec_mode", ""))
     algo = str(snap.get("cluster_algo", ""))
-    if algo == "lda":
+    if vec_mode == "sbert":
+        # Mirrors app_cluster.py:3666-3687 — dense SBERT embeddings drive
+        # clustering, TF-IDF matrix stays alongside purely for keyword
+        # extraction in postprocess.
+        from ml_vectorizers import SBERTVectorizer
+
+        model_name_obj = snap.get("sbert_model", "cointegrated/rubert-tiny2")
+        model_name = str(model_name_obj) if model_name_obj else "cointegrated/rubert-tiny2"
+        batch_obj = snap.get("sbert_batch", 32)
+        batch_size = int(batch_obj) if isinstance(batch_obj, (int, float)) else 32
+        device_obj = snap.get("sbert_device", "auto")
+        device = str(device_obj) if device_obj else "auto"
+
+        sbert = SBERTVectorizer(
+            model_name=model_name,
+            batch_size=batch_size,
+            device=device,
+        )
+        clustering_matrix = sbert.fit_transform(texts)
+        clustering_vectorizer: object = sbert
+    elif algo == "lda":
         count_vec = CountVectorizer(
             analyzer="word",
             ngram_range=(1, 2),
@@ -362,7 +389,7 @@ def build_vectors(prepared: PreparedInputs, snap: Mapping[str, object]) -> Vecto
             max_features=max_features,
         )
         clustering_matrix = count_vec.fit_transform(texts)
-        clustering_vectorizer: object = count_vec
+        clustering_vectorizer = count_vec
     else:
         clustering_matrix = tfidf_matrix
         clustering_vectorizer = tfidf_vec

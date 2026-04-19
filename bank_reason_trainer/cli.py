@@ -159,31 +159,44 @@ def _write_apply_output(
 # Subcommand: cluster
 # ---------------------------------------------------------------------------
 
-_CLUSTER_SUPPORTED_VEC_MODE = "tfidf"
+_CLUSTER_SUPPORTED_VEC_MODES = ("tfidf", "sbert")
 _CLUSTER_SUPPORTED_ALGOS = ("kmeans", "agglo", "lda", "hdbscan")
+# sbert only pairs with kmeans in the slice; other combos still route to
+# the prepare-inputs skeleton so users don't accidentally hit half-ported
+# paths (see ADR-0007).
+_CLUSTER_SUPPORTED_SBERT_ALGOS = ("kmeans",)
+
+
+def _is_supported_cluster_combo(snap: Dict[str, Any]) -> bool:
+    vm = snap.get("cluster_vec_mode")
+    algo = snap.get("cluster_algo")
+    if vm not in _CLUSTER_SUPPORTED_VEC_MODES or algo not in _CLUSTER_SUPPORTED_ALGOS:
+        return False
+    if vm == "sbert" and algo not in _CLUSTER_SUPPORTED_SBERT_ALGOS:
+        return False
+    return True
 
 
 def cmd_cluster(args: argparse.Namespace) -> int:
     """Run the headless clustering pipeline.
 
     Wave 3a slice ships ``cluster_vec_mode='tfidf'`` + ``cluster_algo``
-    ∈ {'kmeans', 'agglo'} end-to-end. For a supported combo the full
-    4-stage pipeline runs without ``--allow-skeleton``: it reads
-    ``--text-col`` from each input file, fits TF-IDF + the chosen
-    clusterer, and writes ``(text, cluster_id, top_keywords)`` rows to
-    ``--out``. For any other combo the command falls back to the
-    prepare-inputs skeleton path and requires ``--allow-skeleton``.
+    ∈ {'kmeans', 'agglo', 'lda', 'hdbscan'}, plus ``cluster_vec_mode=
+    'sbert'`` + ``cluster_algo='kmeans'`` end-to-end. For a supported
+    combo the full 4-stage pipeline runs without ``--allow-skeleton``:
+    it reads ``--text-col`` from each input file, fits the chosen
+    vectorizer + clusterer, and writes ``(text, cluster_id,
+    top_keywords)`` rows to ``--out``. For any other combo the command
+    falls back to the prepare-inputs skeleton path and requires
+    ``--allow-skeleton``.
     """
     from cluster_workflow_service import ClusteringWorkflow   # local import: heavy
 
     snap = _load_json(args.snap) if args.snap else {}
-    snap.setdefault("cluster_vec_mode", _CLUSTER_SUPPORTED_VEC_MODE)
+    snap.setdefault("cluster_vec_mode", _CLUSTER_SUPPORTED_VEC_MODES[0])
     snap.setdefault("cluster_algo", _CLUSTER_SUPPORTED_ALGOS[0])
 
-    is_supported = (
-        snap.get("cluster_vec_mode") == _CLUSTER_SUPPORTED_VEC_MODE
-        and snap.get("cluster_algo") in _CLUSTER_SUPPORTED_ALGOS
-    )
+    is_supported = _is_supported_cluster_combo(snap)
 
     if not is_supported:
         if not args.allow_skeleton:
@@ -191,8 +204,10 @@ def cmd_cluster(args: argparse.Namespace) -> int:
                 f"cluster: combo {snap.get('cluster_vec_mode')!r}+"
                 f"{snap.get('cluster_algo')!r} not ported in Wave 3a slice. "
                 "Pass --allow-skeleton to run the prepare-inputs stage and exit, "
-                "or pick cluster_vec_mode='tfidf' + cluster_algo in "
-                f"{list(_CLUSTER_SUPPORTED_ALGOS)}."
+                "or pick cluster_vec_mode in "
+                f"{list(_CLUSTER_SUPPORTED_VEC_MODES)} + cluster_algo in "
+                f"{list(_CLUSTER_SUPPORTED_ALGOS)} "
+                "(sbert pairs only with kmeans)."
             )
             return 2
         prepared = ClusteringWorkflow.prepare_only(
