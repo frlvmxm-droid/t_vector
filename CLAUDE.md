@@ -19,12 +19,26 @@ Shell shortcuts: `run.sh` (Linux/macOS), `run_app.bat` (Windows).
 ### Headless CLI (no tkinter)
 
 ```bash
-python -m bank_reason_trainer cluster --files a.xlsx b.xlsx --snap snap.json
-python -m bank_reason_trainer train   --data train.xlsx --out model.joblib --allow-skeleton
-python -m bank_reason_trainer apply   --model model.joblib --data in.xlsx --out out.xlsx --allow-skeleton
+# Train: TF-IDF (word 1-2 + char 3-5) + LinearSVC(Calibrated)
+python -m bank_reason_trainer train \
+    --data train.xlsx --out model.joblib \
+    --text-col text --label-col label \
+    [--snap snap.json]   # optional: TrainingOptions overrides
+
+# Apply: predict with per-class thresholds from the bundle
+python -m bank_reason_trainer apply \
+    --model model.joblib --data in.xlsx --out out.xlsx \
+    --text-col text [--threshold 0.5]
+
+# Cluster: prepare-only stage; full pipeline pending Wave 3a port
+python -m bank_reason_trainer cluster --files a.xlsx b.xlsx \
+    --snap snap.json --allow-skeleton
 ```
 
-`train`/`apply` are skeletons today; see `docs/adr/0002-pipeline-stages-and-snapshots.md`.
+`train` and `apply` are real (Wave 8.3): TF-IDF features, joblib bundle
+round-trip, CSV/XLSX I/O. `cluster` still gates behind `--allow-skeleton`
+because pipeline stages 2–5 raise `NotImplementedError` until the Wave 3a
+port lands — see `docs/adr/0002-pipeline-stages-and-snapshots.md`.
 
 ---
 

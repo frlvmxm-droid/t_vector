@@ -43,10 +43,15 @@ def test_parser_cluster_parses_files_and_snap():
     assert args.snap == "s.json"
 
 
-def test_parser_train_requires_allow_skeleton():
+def test_parser_train_accepts_data_and_out():
+    """Train no longer gates behind --allow-skeleton (Wave 8.3 — real impl)."""
     parser = build_parser()
     args = parser.parse_args(["train", "--data", "d.xlsx", "--out", "m.joblib"])
-    assert args.allow_skeleton is False
+    assert args.data == "d.xlsx"
+    assert args.out == "m.joblib"
+    assert args.text_col == "text"
+    assert args.label_col == "label"
+    assert not hasattr(args, "allow_skeleton")
 
 
 # ---------------------------------------------------------------------------
@@ -129,30 +134,114 @@ def test_cluster_without_snap_uses_empty_dict(capsys):
 
 
 # ---------------------------------------------------------------------------
-# train
+# train (Wave 8.3 — real implementation, no more --allow-skeleton)
 # ---------------------------------------------------------------------------
 
-def test_train_refuses_without_allow_skeleton(capsys):
-    rc = main(["train", "--data", "d.xlsx", "--out", "m.joblib"])
-    assert rc == 2
+def _write_training_csv(path: pathlib.Path) -> None:
+    """Writes a tiny balanced 2-class CSV (8 rows per class)."""
+    import csv
+    a_rows = [f"перевод не прошёл сегодня в {h}" for h in range(8)]
+    b_rows = [f"карта заблокирована номер {n}" for n in range(8)]
+    with path.open("w", encoding="utf-8-sig", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["text", "label"])
+        for t in a_rows:
+            w.writerow([t, "перевод"])
+        for t in b_rows:
+            w.writerow([t, "блокировка"])
+
+
+def test_train_missing_data_returns_error(tmp_path, capsys):
+    rc = main([
+        "train", "--data", str(tmp_path / "absent.csv"),
+        "--out", str(tmp_path / "m.joblib"),
+    ])
+    assert rc == 1
     err = capsys.readouterr().err
-    assert "skeleton" in err.lower()
+    assert "data file not found" in err
 
 
-def test_train_allow_skeleton_returns_ok(capsys):
-    rc = main(["train", "--data", "d.xlsx", "--out", "m.joblib", "--allow-skeleton"])
-    assert rc == 0
+def test_train_writes_joblib_and_summary(tmp_path, capsys):
+    """Real train E2E: CSV in, joblib out, JSON summary on stdout."""
+    data = tmp_path / "train.csv"
+    out = tmp_path / "model.joblib"
+    _write_training_csv(data)
+
+    rc = main(["train", "--data", str(data), "--out", str(out)])
+    assert rc == 0, capsys.readouterr().err
+    assert out.is_file()
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["n_train_rows"] == 16
+    assert summary["n_classes"] == 2
+    assert "LinearSVC" in summary["clf_type"] or "LogReg" in summary["clf_type"]
 
 
-# ---------------------------------------------------------------------------
-# apply
-# ---------------------------------------------------------------------------
+def test_train_too_few_classes_returns_error(tmp_path, capsys):
+    """Single-class data → exit 1 with informative message (not crash)."""
+    import csv
+    data = tmp_path / "single.csv"
+    with data.open("w", encoding="utf-8-sig", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["text", "label"])
+        for i in range(8):
+            w.writerow([f"text {i}", "only_class"])
 
-def test_apply_refuses_without_allow_skeleton(capsys):
-    rc = main(["apply", "--model", "m.joblib", "--data", "d.xlsx", "--out", "o.xlsx"])
-    assert rc == 2
+    rc = main(["train", "--data", str(data), "--out", str(tmp_path / "m.joblib")])
+    assert rc == 1
     err = capsys.readouterr().err
-    assert "skeleton" in err.lower()
+    assert "2 distinct labels" in err
+
+
+# ---------------------------------------------------------------------------
+# apply (Wave 8.3 — real implementation)
+# ---------------------------------------------------------------------------
+
+def test_apply_round_trip_train_then_predict(tmp_path, capsys):
+    """End-to-end: train a model, then apply it to fresh CSV."""
+    train_data = tmp_path / "train.csv"
+    model_path = tmp_path / "model.joblib"
+    apply_data = tmp_path / "apply.csv"
+    out_path = tmp_path / "out.csv"
+
+    _write_training_csv(train_data)
+
+    rc = main(["train", "--data", str(train_data), "--out", str(model_path)])
+    assert rc == 0, capsys.readouterr().err
+    capsys.readouterr()  # drain summary
+
+    import csv
+    with apply_data.open("w", encoding="utf-8-sig", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["text"])
+        w.writerow(["перевод не дошёл"])
+        w.writerow(["заблокировали карту"])
+
+    rc = main([
+        "apply", "--model", str(model_path),
+        "--data", str(apply_data), "--out", str(out_path),
+    ])
+    assert rc == 0, capsys.readouterr().err
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["n_rows"] == 2
+    assert out_path.is_file()
+
+    with out_path.open("r", encoding="utf-8-sig") as f:
+        rows = list(csv.reader(f))
+    assert rows[0] == ["text", "predicted_label", "confidence", "needs_review"]
+    assert len(rows) == 3  # header + 2 predictions
+    # Both predicted labels must come from the training set
+    assert rows[1][1] in {"перевод", "блокировка"}
+    assert rows[2][1] in {"перевод", "блокировка"}
+
+
+def test_apply_missing_model_returns_error(tmp_path, capsys):
+    rc = main([
+        "apply", "--model", str(tmp_path / "absent.joblib"),
+        "--data", str(tmp_path / "d.csv"), "--out", str(tmp_path / "o.csv"),
+    ])
+    assert rc == 1
+    # error string varies by missing-file vs unsupported-extension; just check non-empty
+    assert capsys.readouterr().err.strip() != ""
 
 
 # ---------------------------------------------------------------------------

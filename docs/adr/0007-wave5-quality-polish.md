@@ -132,6 +132,57 @@ Wave 5 result: 1503 passed / 0 failed / 0 DeprecationWarnings.
 - Coverage line/branch: 69 % → **73.15 %** on the testable core. Gate
   ratcheted 65 → 72 (+1.15 pt safety margin). 1510 passed / 0 failed /
   23 skipped.
+
+### Wave 8.3 actual (real CLI for train/apply)
+`bank_reason_trainer train` and `apply` are no longer skeletons.
+
+* `train` reads `--data` (xlsx/csv) via `excel_utils.open_tabular`, picks
+  `--text-col`/`--label-col` from headers, builds a TF-IDF FeatureUnion
+  (word 1-2 + char 3-5), calls `TrainingWorkflow.fit_and_evaluate`,
+  persists a v1 `train_model_bundle` joblib via
+  `TrainingWorkflow.persist_artifact`. `--snap` accepts a JSON dict
+  whose keys map to `TrainingOptions` fields (calib_method, use_smote,
+  field_dropout_*, etc.); unknown keys are dropped silently rather
+  than crashing on a typo. Fails fast (exit 1) on `<2` distinct
+  labels or `<4` rows.
+* `apply` loads the bundle through `model_loader.load_model_artifact`
+  (SHA-256 + artifact-identity validated), runs `predict_proba` and
+  `apply_prediction_service.predict_with_thresholds` (per-class
+  thresholds from the bundle, global floor from `--threshold`),
+  writes CSV (default) or XLSX (`.xlsx` extension) with
+  `[text, predicted_label, confidence, needs_review]` columns.
+* Tests: `tests/test_cli_entrypoint.py` extended with a real round-trip
+  (`test_apply_round_trip_train_then_predict`), missing-data /
+  too-few-classes / missing-model error paths, and a parser-level
+  contract guard. Net +7 tests.
+* Cluster CLI keeps the `--allow-skeleton` gate — stages 2–5 of
+  `app_cluster_pipeline.py` are still `NotImplementedError`. See the
+  Wave 7 deferral note below.
+
+### Wave 7 (run_cluster decomposition) — deferred to a later wave
+Investigation in this wave confirmed Wave 7.2/7.3 (extract stages 2–3
+from `app_cluster.run_cluster()`) cannot ship safely yet:
+
+* **Hard prereq missing.** `app_cluster_pipeline.build_vectors`,
+  `run_clustering`, `postprocess_clusters`, `export_cluster_outputs`
+  currently raise `NotImplementedError` — the real math still lives in
+  the Tk-bound 700-line stage 2 of `app_cluster.run_cluster()`. Without
+  the Wave 3a port (ADR-0002), there is no UI-free orchestration surface
+  to run as an E2E behavioral baseline.
+* **The "test under Xvfb instead" alternative was rejected.** `run_cluster`
+  binds tightly to `self._right_tabs`, `begin_long_task(run_button=…)`,
+  `prepare_long_task_ui(owner=self, …)` and a swarm of `tk.Var`-backed
+  status fields. Mocking that stack fakes the very thing the safety net
+  is supposed to verify (real widget order-of-update, threading, cancel
+  flow). The existing `tests/test_ui_smoke.py` proves the mixins boot —
+  not that they cluster correctly.
+* **Sequenced fix.** A future wave should: (a) port stage 2 sub-blocks
+  (TF-IDF vectorize, KMeans/HDBSCAN fit) into pure functions in
+  `app_cluster_pipeline.py`, (b) write unit tests for each as the
+  baseline, (c) only then re-write `app_cluster.run_cluster()` to call
+  those functions. Refactoring 700 LoC of stage 2 ahead of (a)/(b) ships
+  silent-drift risk for nominal LoC reduction; this wave declines that
+  trade.
 - Property tests (8 in `test_property_invariants.py`) catch a class of
   bugs example tests cannot (random inputs, shrunken counter-examples).
 - CI failure surface widens 1× → 3× Python versions + dedicated
