@@ -36,6 +36,17 @@ from app_logger import get_logger
 
 _log = get_logger(__name__)
 
+# --- nn_mix (SMOTE-подобное смешение для текстов) --------------------------
+# Параметры Beta(α, α): α<1 предпочитает крайние смеси (как classic SMOTE weight).
+_NN_MIX_BETA_ALPHA = 0.4
+# Порог косинусного расстояния для отбрасывания самого себя при поиске ближайшего соседа.
+_NN_MIX_SELF_DIST_EPS = 1e-6
+# TF-IDF для построения индекса NN: малая модель, char_wb 2..4.
+_NN_MIX_NGRAM_RANGE = (2, 4)
+_NN_MIX_MAX_FEATURES = 15_000
+# ---------------------------------------------------------------------------
+
+
 def make_classifier(
     y: List[str],
     C: float,
@@ -225,8 +236,8 @@ def _oversample_rare_classes(
         try:
             from sklearn.feature_extraction.text import TfidfVectorizer as _TfIdf
             from sklearn.neighbors import NearestNeighbors
-            _vec = _TfIdf(analyzer="char_wb", ngram_range=(2, 4),
-                          max_features=15_000, min_df=1)
+            _vec = _TfIdf(analyzer="char_wb", ngram_range=_NN_MIX_NGRAM_RANGE,
+                          max_features=_NN_MIX_MAX_FEATURES, min_df=1)
             _M = _vec.fit_transform([str(t) for t in Xtr])
             _nn_cache["vec"] = _vec
             _nn_cache["M"] = _M
@@ -259,7 +270,7 @@ def _oversample_rare_classes(
             # Берём ближайшего соседа (не сам пример — пропускаем расстояние 0)
             _nbr_i = None
             for _d, _ni in zip(_dist[0], _nbrs[0]):
-                if _d > 1e-6:
+                if _d > _NN_MIX_SELF_DIST_EPS:
                     _nbr_i = int(_idx_cls[_ni])
                     break
             if _nbr_i is None:
@@ -269,8 +280,8 @@ def _oversample_rare_classes(
             _b_toks = _neighbour.split()
             if not _a_toks or not _b_toks:
                 return _augment_light_text(base_text)
-            # λ ~ Beta(0.4, 0.4) — предпочитает крайние смеси (как classic SMOTE weights)
-            _lam = float(_rng.beta(0.4, 0.4))
+            # λ ~ Beta(α, α) — предпочитает крайние смеси (как classic SMOTE weights)
+            _lam = float(_rng.beta(_NN_MIX_BETA_ALPHA, _NN_MIX_BETA_ALPHA))
             _n_a = max(1, int(round(len(_a_toks) * _lam)))
             _take_a = list(_rng.choice(_a_toks, size=_n_a, replace=False)) if _n_a <= len(_a_toks) \
                 else list(_a_toks)
@@ -553,6 +564,54 @@ def detect_mislabeled_examples(
     return results
 
 
+def _format_classification_report(rep_dict: Dict[str, Any], digits: int = 3) -> str:
+    """Формирует текстовый отчёт классификации из уже посчитанного dict'а.
+
+    Позволяет избежать двойного вызова sklearn.classification_report (раз для
+    текста, раз для dict'а). Формат совместим с sklearn, но строится за один
+    проход по готовым метрикам.
+    """
+    fmt = f"{{:.{digits}f}}"
+    rows: list[str] = []
+    headers = ("precision", "recall", "f1-score", "support")
+    w_label = max([10] + [len(str(k)) for k in rep_dict if k not in ("accuracy",)])
+    rows.append(
+        f"{'':>{w_label}}  "
+        + "  ".join(f"{h:>9}" for h in headers)
+    )
+    rows.append("")
+    # Классы — всё кроме специальных ключей
+    special = {"accuracy", "macro avg", "weighted avg"}
+    for label, metrics in rep_dict.items():
+        if label in special or not isinstance(metrics, dict):
+            continue
+        rows.append(
+            f"{str(label):>{w_label}}  "
+            f"{fmt.format(metrics.get('precision', 0.0)):>9}  "
+            f"{fmt.format(metrics.get('recall', 0.0)):>9}  "
+            f"{fmt.format(metrics.get('f1-score', 0.0)):>9}  "
+            f"{int(metrics.get('support', 0)):>9}"
+        )
+    rows.append("")
+    if "accuracy" in rep_dict:
+        # accuracy — скаляр; в dict поддержка — общая сумма примеров macro avg
+        _acc = rep_dict["accuracy"]
+        _support = int(rep_dict.get("macro avg", {}).get("support", 0)) if isinstance(
+            rep_dict.get("macro avg"), dict) else 0
+        rows.append(f"{'accuracy':>{w_label}}  {'':>9}  {'':>9}  {fmt.format(_acc):>9}  {_support:>9}")
+    for agg in ("macro avg", "weighted avg"):
+        m = rep_dict.get(agg)
+        if isinstance(m, dict):
+            rows.append(
+                f"{agg:>{w_label}}  "
+                f"{fmt.format(m.get('precision', 0.0)):>9}  "
+                f"{fmt.format(m.get('recall', 0.0)):>9}  "
+                f"{fmt.format(m.get('f1-score', 0.0)):>9}  "
+                f"{int(m.get('support', 0)):>9}"
+            )
+    return "\n".join(rows)
+
+
 def _compute_per_class_thresholds(
     proba: np.ndarray,
     classes: List[str],
@@ -616,8 +675,10 @@ def _compute_validation_extras(
         proba = None
         pred = list(pipe.predict(Xva))
 
-    rep = classification_report(yva, pred, digits=3)
-    rep_dict = classification_report(yva, pred, digits=3, output_dict=True)
+    # Единый вызов classification_report — строим и dict, и текстовую форму
+    # из одного прохода, избегая двойного пересчёта метрик.
+    rep_dict = classification_report(yva, pred, digits=3, output_dict=True, zero_division=0)
+    rep = _format_classification_report(rep_dict, digits=3)
     extras["report_dict"] = rep_dict
 
     if log_cb:

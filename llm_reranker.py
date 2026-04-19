@@ -67,6 +67,13 @@ def _build_rerank_user(
 # Response parsing
 # ---------------------------------------------------------------------------
 
+_RESPONSE_PREFIX_RE = re.compile(
+    r"^\s*(?:класс|category|class|ответ|answer|result|итог)\s*[:\-–—]\s*",
+    re.IGNORECASE,
+)
+_RESPONSE_TRIM_RE = re.compile(r'^[\s"«\'`*\-•]+|[\s"»\'`*\-•.]+$')
+
+
 def _parse_rerank_response(
     response: str,
     candidates: Sequence[str],
@@ -76,8 +83,18 @@ def _parse_rerank_response(
     r = (response or "").strip()
     if not r:
         return fallback
+    # Берём только первую непустую строку (LLM иногда возвращает "класс\n\nобоснование…")
+    for line in r.splitlines():
+        line = line.strip()
+        if line:
+            r = line
+            break
+    # Снимаем типичные префиксы "Класс:", "Ответ -" и т.п.
+    r = _RESPONSE_PREFIX_RE.sub("", r)
     # Снимаем кавычки, точки, маркеры
-    r = re.sub(r'^[\s"«\'`*\-•]+|[\s"»\'`*\-•.]+$', "", r).strip()
+    r = _RESPONSE_TRIM_RE.sub("", r).strip()
+    if not r:
+        return fallback
     # 1. Точное совпадение (регистронезависимо)
     _r_lower = r.lower()
     for c in candidates:
@@ -131,13 +148,21 @@ def rerank_top_k(
     _n_ok = 0
     _n_fail = 0
     _n_skip = 0
+    _n_cache = 0
+    # In-batch кэш: дубликаты (текст + набор кандидатов) не уходят повторно в LLM.
+    cache: dict[tuple[str, tuple[str, ...]], str] = {}
 
     for i, (txt, cands, fb) in enumerate(zip(texts, top_candidates, argmax_labels)):
         cands_list = [str(c) for c in cands]
         if len(cands_list) < 2:
-            # Нечего пересортировывать
             out.append(str(fb))
             _n_skip += 1
+            continue
+
+        cache_key = (str(txt or ""), tuple(cands_list))
+        if cache_key in cache:
+            out.append(cache[cache_key])
+            _n_cache += 1
             continue
 
         user_prompt = _build_rerank_user(txt, cands_list, class_examples)
@@ -154,6 +179,7 @@ def rerank_top_k(
                 temperature=temperature,
             )
             chosen = _parse_rerank_response(resp, cands_list, fallback=str(fb))
+            cache[cache_key] = chosen
             out.append(chosen)
             _n_ok += 1
         except FeatureBuildError as e:
@@ -167,8 +193,8 @@ def rerank_top_k(
 
     if log_fn:
         log_fn(
-            f"[LLM-ре-ранк] rerank'нуто={_n_ok} | ошибок={_n_fail} | пропущено={_n_skip} "
-            f"(всего строк={len(texts)})"
+            f"[LLM-ре-ранк] rerank'нуто={_n_ok} | из кэша={_n_cache} | "
+            f"ошибок={_n_fail} | пропущено={_n_skip} (всего строк={len(texts)})"
         )
     return out
 
@@ -181,10 +207,16 @@ def build_class_examples_from_training(
 ) -> dict[str, list[str]]:
     """Отбирает до n_per_class текстов на класс (первые encountered).
 
-    Упрощённый отбор — не ищет ближайшие к центроиду. Для качественного отбора
-    используй ml_diagnostics.find_cluster_representative_texts с labels=y_labels
-    и предобученными векторами.
+    ВНИМАНИЕ: упрощённый отбор по порядку появления, НЕ по центроидности.
+    Для продакшен-использования предпочитайте
+    `ml_diagnostics.find_cluster_representative_texts(labels=y_labels, ...)` —
+    качество few-shot у LLM заметно выше с репрезентативными примерами.
     """
+    _log.info(
+        "build_class_examples_from_training: упрощённый отбор — "
+        "для лучшего качества few-shot используйте "
+        "ml_diagnostics.find_cluster_representative_texts"
+    )
     out: dict[str, list[str]] = {}
     for x, y in zip(X_texts, y_labels):
         _y = str(y)

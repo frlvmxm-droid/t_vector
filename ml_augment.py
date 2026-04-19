@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 ml_augment — LLM-based data augmentation for rare training classes.
 
@@ -7,9 +6,15 @@ under-represented classes before training.
 """
 from __future__ import annotations
 
-import re
-from typing import Any, Callable, Dict, List, Optional, Tuple
+import logging
+from collections import Counter
+from typing import Any, Callable, Optional
 
+_log = logging.getLogger(__name__)
+
+MAX_SEED_EXAMPLES = 3
+MAX_SEED_CHARS = 200
+LLM_MAX_TOKENS = 400
 
 _SYS_PROMPT = (
     "Ты — специалист по аугментации текстовых данных для банковских чат-ботов. "
@@ -21,7 +26,7 @@ _SYS_PROMPT = (
 )
 
 
-def _parse_lines(text: str) -> List[str]:
+def _parse_lines(text: str) -> list[str]:
     """Extract paraphrase lines from LLM response."""
     lines = []
     for raw in text.splitlines():
@@ -32,48 +37,51 @@ def _parse_lines(text: str) -> List[str]:
 
 
 def generate_class_paraphrases(
-    examples: List[str],
+    examples: list[str],
     n_paraphrases: int,
     llm_complete_fn: Callable[..., str],
     provider: str,
     model: str,
     api_key: str,
     cancel_event: Optional[Any] = None,
-) -> List[str]:
+    n_seeds: int = MAX_SEED_EXAMPLES,
+) -> list[str]:
     """Generate n_paraphrases paraphrases for the given examples using an LLM.
 
     Returns a flat list of generated texts (may be fewer than requested if
-    the LLM returns shorter output or on error).
+    the LLM returns shorter output or on error). Errors are logged to the
+    module logger (ml_augment) but swallowed to keep augmentation
+    non-blocking for the training pipeline.
     """
     if not examples:
         return []
 
-    # Use up to 3 examples as seeds to give the LLM variety
-    seeds = examples[:3]
+    seeds = examples[:n_seeds]
     user_prompt = (
         f"Сгенерируй {n_paraphrases} перефразировок для каждого из следующих обращений.\n\n"
-        + "\n".join(f"Пример {i+1}: {ex[:200]}" for i, ex in enumerate(seeds))
+        + "\n".join(f"Пример {i+1}: {ex[:MAX_SEED_CHARS]}" for i, ex in enumerate(seeds))
     )
 
+    if cancel_event is not None and cancel_event.is_set():
+        return []
     try:
-        if cancel_event is not None and cancel_event.is_set():
-            return []
         response = llm_complete_fn(
             provider=provider,
             model=model,
             api_key=api_key,
             system_prompt=_SYS_PROMPT,
             user_prompt=user_prompt,
-            max_tokens=400,
+            max_tokens=LLM_MAX_TOKENS,
         )
-        return _parse_lines(response)
-    except Exception:
+    except Exception as exc:
+        _log.warning("LLM augmentation failed (provider=%s, model=%s): %s", provider, model, exc)
         return []
+    return _parse_lines(response)
 
 
 def augment_rare_classes(
-    X: List[str],
-    y: List[str],
+    X: list[str],
+    y: list[str],
     min_samples_threshold: int,
     n_paraphrases: int,
     llm_complete_fn: Callable[..., str],
@@ -82,7 +90,7 @@ def augment_rare_classes(
     api_key: str,
     log_fn: Optional[Callable[[str], None]] = None,
     cancel_event: Optional[Any] = None,
-) -> Tuple[List[str], List[str], Dict[str, Any]]:
+) -> tuple[list[str], list[str], dict[str, Any]]:
     """Augment classes with fewer than min_samples_threshold examples.
 
     For each rare class, calls the LLM to generate paraphrases of existing
@@ -93,8 +101,6 @@ def augment_rare_classes(
         y_aug: original + generated labels
         report: {"classes_augmented": int, "rows_added": int, "skipped": List[str]}
     """
-    from collections import Counter
-
     counts = Counter(y)
     rare_classes = sorted(
         [cls for cls, cnt in counts.items() if cnt < min_samples_threshold]
@@ -106,10 +112,9 @@ def augment_rare_classes(
     X_aug = list(X)
     y_aug = list(y)
     rows_added = 0
-    skipped: List[str] = []
+    skipped: list[str] = []
 
-    # Build index: class → list of texts
-    class_texts: Dict[str, List[str]] = {}
+    class_texts: dict[str, list[str]] = {}
     for text, label in zip(X, y):
         class_texts.setdefault(label, []).append(text)
 

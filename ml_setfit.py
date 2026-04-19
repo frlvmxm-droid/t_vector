@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 ml_setfit.py — SetFitClassifier: sklearn-совместимый классификатор на базе SetFit.
 
@@ -8,21 +7,79 @@ SetFit (HuggingFace) обучает контрастную классифика�
 на задачах семантической классификации текста.
 
 Требования: pip install setfit>=0.9
+
+VRAM-пороги авто-настройки можно переопределить через env-переменные:
+    BRT_SETFIT_MAX_TRAIN_OVERRIDE  — принудительный cap размера датасета
+    BRT_SETFIT_MAX_PAIRS_OVERRIDE  — принудительный cap кол-ва пар
 """
 from __future__ import annotations
 
+import gc
 import importlib.util
+import os
 import time
 from collections import Counter
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-import os as _os
-
 import numpy as np
 
 # Снижает фрагментацию GPU-памяти; рекомендовано самим PyTorch при OOM.
-_os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
+
+# ---------------------------------------------------------------------------
+# VRAM-профили: дефолты можно переопределить env-переменными (см. docstring).
+# ---------------------------------------------------------------------------
+
+VRAM_PROFILES: tuple[tuple[float, int, int], ...] = (
+    # (min_vram_gb, max_train, max_pairs)
+    (38.0, 30_000, 2_000_000),  # A100 40GB / H100 — серверный класс
+    (24.0, 15_000, 800_000),    # RTX 3090 / 4090 / A6000
+    (12.0, 8_000,  400_000),    # RTX 4070Ti / 4080
+    (0.0,  5_000,  200_000),    # RTX 4060Ti 8GB и ниже / CPU
+)
+
+
+def _pick_vram_profile(vram_gb: float) -> tuple[int, int]:
+    """Возвращает (max_train, max_pairs) для заданного объёма VRAM."""
+    override_train = os.environ.get("BRT_SETFIT_MAX_TRAIN_OVERRIDE")
+    override_pairs = os.environ.get("BRT_SETFIT_MAX_PAIRS_OVERRIDE")
+    for thr, max_train, max_pairs in VRAM_PROFILES:
+        if vram_gb >= thr:
+            _train = int(override_train) if override_train else max_train
+            _pairs = int(override_pairs) if override_pairs else max_pairs
+            return _train, _pairs
+    return VRAM_PROFILES[-1][1], VRAM_PROFILES[-1][2]
+
+
+# ---------------------------------------------------------------------------
+# VRAM cleanup helper — удалён дубликат из fit() (3 места).
+# ---------------------------------------------------------------------------
+
+def _cuda_cleanup(*, synchronize: bool = True) -> None:
+    """Best-effort освобождение CUDA-кэша. Никогда не поднимает исключение."""
+    try:
+        gc.collect()
+        import torch
+        if torch.cuda.is_available():
+            if synchronize:
+                torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+    except (ImportError, RuntimeError):  # noqa: BLE001 — best-effort only
+        pass
+
+
+def _is_setfit_config_missing_error(exc: BaseException) -> bool:
+    """True если исключение — отсутствие config_setfit.json (нужен fallback на ST)."""
+    # HF/huggingface_hub не гарантирует единого типа исключения для missing entry:
+    # ловим EntryNotFoundError и OSError/RepositoryNotFoundError, плюс substring
+    # как последнюю линию защиты для совместимости с разными версиями hub.
+    exc_name = type(exc).__name__
+    if exc_name in ("EntryNotFoundError", "RepositoryNotFoundError"):
+        return True
+    msg = str(exc)
+    return any(k in msg for k in ("Entry Not Found", "config_setfit", "404"))
 
 
 # ---------------------------------------------------------------------------
@@ -135,55 +192,32 @@ class SetFitClassifier:
         # Патч совместимости: default_logdir убрана из transformers >= 4.40
         import transformers.training_args as _ta
         if not hasattr(_ta, "default_logdir"):
-            import datetime, os as _os
+            import datetime
             def _default_logdir() -> str:
                 current_time = datetime.datetime.now().strftime("%b%d_%H-%M-%S")
-                return _os.path.join("runs", current_time)
+                return os.path.join("runs", current_time)
             _ta.default_logdir = _default_logdir
 
         from setfit import SetFitModel, Trainer, TrainingArguments
         from datasets import Dataset
 
-        # Устанавливаем env-переменную для снижения фрагментации CUDA-памяти
-        import os as _os
-        _os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+        os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
-        # Освобождаем память от предыдущей модели (если была) перед загрузкой новой.
-        # Без этого повторный вызов fit() накапливает модели на GPU → OOM.
-        # Для resource-cleanup блоков (torch.cuda.*, .to("cpu")) используем
-        # широкий except: ошибка на этом этапе НЕ должна прерывать fit().
+        # Освобождаем память от предыдущей модели (если была) перед загрузкой новой —
+        # без этого повторный вызов fit() накапливает модели на GPU и ведёт к OOM.
         if self._model is not None:
             try:
-                # Явно переносим на CPU перед удалением, чтобы освободить VRAM немедленно
-                import torch as _torch_free
                 self._model.to("cpu")
-            except Exception:  # noqa: BLE001 — best-effort VRAM release
+            except (RuntimeError, AttributeError):  # noqa: BLE001 — best-effort VRAM release
                 pass
-            import gc as _gc
             del self._model
             self._model = None
-            _gc.collect()
-            try:
-                import torch as _torch_free2
-                if _torch_free2.cuda.is_available():
-                    _torch_free2.cuda.synchronize()
-                    _torch_free2.cuda.empty_cache()
-            except Exception:  # noqa: BLE001 — best-effort VRAM release
-                pass
+            _cuda_cleanup()
 
         self.classes_ = sorted(set(y))
         device = self._resolve_device()
 
-        # Очищаем CUDA-кэш перед загрузкой новой модели
-        try:
-            import gc as _gc_pre
-            _gc_pre.collect()
-            import torch as _torch_pre
-            if _torch_pre.cuda.is_available():
-                _torch_pre.cuda.synchronize()
-                _torch_pre.cuda.empty_cache()
-        except Exception:
-            pass
+        _cuda_cleanup()
 
         self._log(f"[SetFit] Загрузка энкодера «{self.model_name}» на {device}…")
         self._prog(0.0, f"[SetFit] Загрузка {self.model_name}…")
@@ -198,8 +232,7 @@ class SetFitClassifier:
                 **hf_kwargs,
             )
         except Exception as _load_err:
-            _err_str = str(_load_err)
-            if any(k in _err_str for k in ("Entry Not Found", "config_setfit", "404")):
+            if _is_setfit_config_missing_error(_load_err):
                 # Модель — обычный SentenceTransformer без SetFit-чекпоинта.
                 # Создаём SetFitModel вручную поверх тела SentenceTransformer.
                 self._log(
@@ -298,12 +331,7 @@ class SetFitClassifier:
         )
 
         self._prog(20.0, "[SetFit] Контрастное обучение…")
-        try:
-            import torch as _torch_pre_train
-            if _torch_pre_train.cuda.is_available():
-                _torch_pre_train.cuda.empty_cache()
-        except Exception:
-            pass
+        _cuda_cleanup(synchronize=False)
         trainer.train()
         self._prog(85.0, "[SetFit] Сохранение весов…")
 
@@ -340,12 +368,7 @@ class SetFitClassifier:
         from setfit import SetFitModel
 
         device = self._resolve_device()
-        try:
-            import torch as _torch_ens
-            if _torch_ens.cuda.is_available():
-                _torch_ens.cuda.empty_cache()
-        except Exception:
-            pass
+        _cuda_cleanup(synchronize=False)
         self._log(f"[SetFit] Загрузка модели из {self._local_model_path} → {device}…")
         self._model = SetFitModel.from_pretrained(self._local_model_path)
         self._model.to(device)
@@ -524,28 +547,16 @@ def train_model_setfit(
                 if log_cb:
                     log_cb(f"[Балансировка] оверсэмплинг: {_orig} → {len(Xtr)} примеров")
 
-    # Слой 2: жёсткий cap + Слой 3: авто-итерации — лимиты масштабируются по VRAM.
-    # Пар ≈ num_iterations × len(Xtr) × 2; fingerprint-сериализация требует ~2× RAM от пар.
-    # Нагрузка на CPU/RAM, поэтому VRAM используем как прокси для класса машины.
+    # VRAM-профиль: лимит размера датасета и кол-ва пар. Настраивается через
+    # VRAM_PROFILES / env BRT_SETFIT_MAX_TRAIN_OVERRIDE, BRT_SETFIT_MAX_PAIRS_OVERRIDE.
     _hw_vram = 0.0
     try:
         from hw_profile import detect as _hw_detect_sf
         _hw_vram = _hw_detect_sf().gpu_vram_gb or 0.0
-    except Exception:
+    except (ImportError, RuntimeError):
         pass
 
-    if _hw_vram >= 38:          # A100 40GB / H100 — серверный класс (RAM 256GB+)
-        _SETFIT_MAX_TRAIN = 30_000
-        _MAX_PAIRS        = 2_000_000
-    elif _hw_vram >= 24:        # RTX 3090 / 4090 / A6000
-        _SETFIT_MAX_TRAIN = 15_000
-        _MAX_PAIRS        = 800_000
-    elif _hw_vram >= 12:        # RTX 4070Ti / 4080
-        _SETFIT_MAX_TRAIN = 8_000
-        _MAX_PAIRS        = 400_000
-    else:                       # RTX 4060Ti 8GB и ниже / CPU
-        _SETFIT_MAX_TRAIN = 5_000
-        _MAX_PAIRS        = 200_000
+    _SETFIT_MAX_TRAIN, _MAX_PAIRS = _pick_vram_profile(_hw_vram)
 
     if len(Xtr) > _SETFIT_MAX_TRAIN:
         _rng_cap = np.random.default_rng(int(random_state) + 99)

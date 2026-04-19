@@ -42,6 +42,45 @@ _log = get_logger(__name__)
 SBERT_LOCAL_DIR = APP_ROOT / "sbert_models"
 
 
+# ---------------------------------------------------------------------------
+# pymorphy2 compat-shim для Python 3.13: inspect.getargspec удалён, а
+# pymorphy2 продолжает его вызывать. Мы подменяем его совместимым адаптером.
+# Патч идемпотентный и защищён блокировкой — корректен при конкурентных
+# импортах pymorphy2 из разных потоков.
+# ---------------------------------------------------------------------------
+
+import threading as _threading
+
+_GETARGSPEC_SHIM_LOCK = _threading.Lock()
+_GETARGSPEC_SHIM_INSTALLED = False
+
+
+def _install_getargspec_shim() -> None:
+    """Устанавливает inspect.getargspec как совместимый адаптер getfullargspec.
+
+    Применяется один раз на процесс. После установки НЕ откатывается —
+    pymorphy2 хранит ссылки на MorphAnalyzer, который может вызывать
+    getargspec в любой момент. Возврат к NotImplementedError приведёт к
+    краху pymorphy2 на отложенных операциях.
+    """
+    global _GETARGSPEC_SHIM_INSTALLED
+    if _GETARGSPEC_SHIM_INSTALLED:
+        return
+    with _GETARGSPEC_SHIM_LOCK:
+        if _GETARGSPEC_SHIM_INSTALLED:
+            return
+        import inspect
+        if not hasattr(inspect, "_getargspec_orig"):
+            inspect._getargspec_orig = getattr(inspect, "getargspec", None)
+
+            def _compat_getargspec(func):
+                fs = inspect.getfullargspec(func)
+                return fs.args, fs.varargs, fs.varkw, fs.defaults
+
+            inspect.getargspec = _compat_getargspec
+        _GETARGSPEC_SHIM_INSTALLED = True
+
+
 def _run_sbert_bootstrap_patches() -> None:
     """Применяет compat-патчи в bootstrap-контексте SBERT (не на import модуля)."""
     ml_compat.apply_early_compat_patches()
@@ -152,8 +191,20 @@ class SBERTVectorizer:
     fit()       — проверяет кэш, при необходимости скачивает, загружает в память.
     transform() — кодирует тексты батчами с прогрессом через log_cb / progress_cb.
 
-    Модель НЕ сериализуется в .joblib (только имя + batch_size).
-    При загрузке модели из .joblib — SBERT автоматически подгружается из кэша.
+    Сериализация (ВАЖНО):
+      • В .joblib сохраняются ТОЛЬКО имя модели, batch_size, device, prefix-
+        таблица. Сами веса (~400 MB – 2 GB) НЕ пиклятся — это осознанное
+        архитектурное решение, иначе bundle будет неподъёмным.
+      • При загрузке из .joblib SBERTVectorizer подгружает веса из локального
+        кэша HuggingFace (SBERT_LOCAL_DIR / cache_dir). Это означает жёсткое
+        требование к deployment-окружению:
+          1) либо кэш должен быть физически доступен (bind-mount, hf-cache dir),
+          2) либо при первом transform() нужен интернет-доступ к huggingface.co
+             для повторной загрузки.
+        Если этого не обеспечено, transform() упадёт с OSError / ConnectionError.
+      • В airgapped-деплоях рекомендуется заранее выполнить
+        `SentenceTransformer(model_name).save(...)` и выставить cache_dir
+        на локальную папку.
 
     Параметры:
         log_cb      — callback(str): вызывается с текстовыми строками прогресса
@@ -1309,15 +1360,7 @@ class Lemmatizer(BaseEstimator, TransformerMixin):
             pass
         # Fallback: pymorphy2 (legacy; требует compat-патча на Python 3.13).
         try:
-            import inspect
-            # pymorphy2 ожидает старый inspect.getargspec → 4-элементный tuple.
-            # На Python 3.13 переопределяем совместимым адаптером.
-            if not hasattr(inspect, "_getargspec_orig"):
-                inspect._getargspec_orig = getattr(inspect, "getargspec", None)
-                def _compat_getargspec(func):
-                    fs = inspect.getfullargspec(func)
-                    return fs.args, fs.varargs, fs.varkw, fs.defaults
-                inspect.getargspec = _compat_getargspec
+            _install_getargspec_shim()
             import pymorphy2
             self._morph = pymorphy2.MorphAnalyzer()
             self._available = True

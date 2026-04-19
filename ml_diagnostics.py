@@ -60,10 +60,17 @@ def extract_cluster_keywords(
     if feat is None or len(feat) == 0:
         return [""] * centers.shape[0]
 
+    n_feat = len(feat)
     for i in range(centers.shape[0]):
         rowc = centers[i]
-        # Центроиды могут иметь меньше элементов чем feat (напр. после SVD)
-        if len(rowc) != len(feat):
+        if len(rowc) != n_feat:
+            # Возможно после SVD: центроиды в пониженном пространстве.
+            # Вместо тихого пропуска предупреждаем один раз через логгер.
+            _log.warning(
+                "extract_cluster_keywords: размер центроида (%d) != |feat| (%d) "
+                "для кластера %d — keywords недоступны (вероятно SVD-проекция)",
+                len(rowc), n_feat, i,
+            )
             kws.append("")
             continue
         top_idx = rowc.argsort()[::-1][:top_n]
@@ -531,11 +538,17 @@ def rank_for_active_learning(
     per_class_quota — если задан, возвращает не более N примеров на класс
                       (предотвращает доминирование одного класса в очереди).
     """
-    proba_arr = np.asarray(proba)
+    proba_arr = np.asarray(proba, dtype=float)
+    # Защита от NaN в `predict_proba` (калибровщик может вернуть NaN
+    # при числовой нестабильности). Заменяем на равномерное распределение.
+    if np.isnan(proba_arr).any():
+        n_cls = proba_arr.shape[1] if proba_arr.ndim == 2 else 1
+        proba_arr = np.where(np.isnan(proba_arr), 1.0 / max(1, n_cls), proba_arr)
     n_samples = proba_arr.shape[0]
     eps = 1e-10
 
     if strategy == "entropy":
+        # clip(0, eps, 1) => eps, поэтому all-zero строки дают конечное значение.
         p = np.clip(proba_arr, eps, 1.0)
         scores = -np.sum(p * np.log(p), axis=1)
     elif strategy == "margin":

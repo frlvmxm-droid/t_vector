@@ -120,21 +120,17 @@ def distill_soft_labels(
         if j_s is not None:
             teacher_proba[:, j_s] = teacher_proba_raw[:, j_t]
 
-    # One-hot hard labels
+    # One-hot hard labels. `classes` is derived from `y`, so every lbl is present.
     hard_labels = np.zeros((len(X), n_classes))
     for i, lbl in enumerate(y):
-        j = cls_to_idx.get(lbl)
-        if j is not None:
-            hard_labels[i, j] = 1.0
+        hard_labels[i, cls_to_idx[lbl]] = 1.0
 
-    # Мягкие метки = смесь teacher + hard
     soft_proba = alpha * teacher_proba + (1.0 - alpha) * hard_labels
 
-    # Для sklearn: обучаем на argmax + sample_weight (= уверенность в истинном классе)
-    # Это аппроксимация дистилляции для hard-label классификаторов.
+    # Для sklearn: обучаем на argmax + sample_weight (= уверенность в истинном классе).
     soft_y = [classes[int(soft_proba[i].argmax())] for i in range(len(X))]
     true_cls_proba = np.array([
-        float(soft_proba[i, cls_to_idx.get(y_i, 0)])
+        float(soft_proba[i, cls_to_idx[y_i]])
         for i, y_i in enumerate(y)
     ])
     # sample_weight: примеры, где мягкая метка совпадает с истинной, весят больше
@@ -151,7 +147,8 @@ def distill_soft_labels(
     )
     _log_msg("[Дистилляция] Обучение студента…")
 
-    student_pipe.fit(X, soft_y, clf__sample_weight=sample_weights)
+    clf_step_name = student_pipe.steps[-1][0]
+    student_pipe.fit(X, soft_y, **{f"{clf_step_name}__sample_weight": sample_weights})
     _log_msg("[Дистилляция] ✅ Студент обучен.")
     return student_pipe
 
