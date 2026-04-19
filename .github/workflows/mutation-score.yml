@@ -47,7 +47,10 @@ jobs:
             "scikit-learn>=1.4" "numpy>=1.24" "scipy>=1.11" \
             "joblib>=1.3" "openpyxl>=3.1" "pandas>=2.1" \
             "cryptography>=42.0" "psutil>=5.9" \
-            pytest hypothesis "mutmut>=2.4"
+            pytest hypothesis "mutmut>=2.4,<3"
+          # mutmut 3.x rewrote the CLI (no --paths-to-mutate, no --json output,
+          # also mutates test files). Our wrapper in ci/mutation_smoke.py is
+          # written against 2.x semantics — see ADR-0006 §"Implementation status".
 
       - name: Run mutation smoke
         env:

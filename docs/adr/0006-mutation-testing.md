@@ -19,6 +19,17 @@ Accepted; nightly harness shipped in Wave 8.1.
 - The original `app_cluster_pipeline.py` / `cluster_run_stages.py`
   candidates from §2 are deferred until the Wave 3a port lands —
   mutating `NotImplementedError` stubs has no signal value.
+- **Mutmut version pin**: the wrapper targets the **2.x CLI**
+  (`mutmut run --paths-to-mutate <file> --runner …` + `mutmut results
+  --json`). Mutmut 3.x rewrote the CLI surface end-to-end:
+  `--paths-to-mutate` was removed (the tool now reads exclusively from
+  `[tool.mutmut] paths_to_mutate` in pyproject), `--json` is gone in
+  favour of `mutmut export-cicd-stats`, and 3.x mutates *test files
+  too*, which makes our "score the source module" contract incoherent.
+  We therefore pin `mutmut>=2.4,<3` in both `pyproject.toml`'s
+  `[project.optional-dependencies] dev` and the install step in
+  `mutation-score.yml`. A future migration to 3.x is tracked as a
+  follow-up, not a blocker.
 
 ## Context
 Current coverage gate is `--cov-fail-under=45` (actual ~49 %). Line
