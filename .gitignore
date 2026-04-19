@@ -34,3 +34,9 @@ Thumbs.db
 # mypy / ruff caches
 .mypy_cache/
 .ruff_cache/
+
+# Reproducible-build artefacts (ADR-0008)
+# uv.lock IS committed (source of truth); the requirements file exported
+# from it in CI is regenerated on every run and must not be committed.
+requirements.locked.txt
+.mutmut-cache*/

@@ -16,6 +16,25 @@ python app.py
 
 Shell shortcuts: `run.sh` (Linux/macOS), `run_app.bat` (Windows).
 
+### Reproducible install (CI / Docker / contributors)
+
+`uv.lock` is the source of truth for fully-pinned wheels (ADR-0008).
+`requirements.txt` is kept for the desktop launcher only.
+
+```bash
+# Install pinned set (matches CI + Docker exactly)
+uv sync --frozen --extra dev
+
+# Bumping a dep
+$EDITOR pyproject.toml          # edit [project.dependencies]
+uv lock                          # regenerate uv.lock
+git add pyproject.toml uv.lock   # commit both — CI's `uv lock --check` enforces
+
+# Build the dev image
+docker build -t bank-reason-trainer:dev .
+docker run --rm bank-reason-trainer:dev    # runs pytest
+```
+
 ### Headless CLI (no tkinter)
 
 ```bash
