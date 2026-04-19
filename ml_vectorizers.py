@@ -1759,8 +1759,6 @@ class PerFieldVectorizer(BaseEstimator, TransformerMixin):
             active = [(wk, tag, 1) for wk, tag in self._FIELDS]
         self._active = active
 
-        total_w = max(1, sum(w for _, _, w in active))
-
         # Собираем тексты по полям за один проход
         field_texts: Dict[str, List[str]] = {tag: [] for _, tag, _ in active}
         for text in X:

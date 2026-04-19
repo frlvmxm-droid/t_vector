@@ -3419,13 +3419,22 @@ class TrainTabMixin:
             else:
                 _em_feats = make_tfidf()
 
+            # Ensemble-члены наследуют ту же конфигурацию аугментации, что и
+            # главная модель, кроме run_cv: каждый K-fold член — уже сам по
+            # себе CV, второй слой кросс-валидации был бы избыточен.
             _em_options = TrainingOptions(
                 calib_method=snap.get("calib_method", "sigmoid"),
                 use_smote=snap.get("use_smote", True),
                 oversample_strategy=snap.get("oversample_strategy", "augment_light"),
                 max_dup_per_sample=int(snap.get("max_dup_per_sample", 5)),
+                use_hard_negatives=snap.get("use_hard_negatives", False),
+                use_field_dropout=snap.get("use_field_dropout", False),
+                field_dropout_prob=float(snap.get("field_dropout_prob", 0.15)),
+                field_dropout_copies=int(snap.get("field_dropout_copies", 2)),
                 use_label_smoothing=bool(snap.get("use_label_smoothing", False)),
                 label_smoothing_eps=float(snap.get("label_smoothing_eps", 0.05)),
+                use_fuzzy_dedup=bool(snap.get("use_fuzzy_dedup", False)),
+                fuzzy_dedup_threshold=int(snap.get("fuzzy_dedup_threshold", 92)),
             )
             _em_pipe, _em_ctype, _em_rep, _em_lbls, _em_cm, _em_ext = workflow.fit_and_evaluate(
                 X, y, _em_feats,
@@ -3759,6 +3768,8 @@ class TrainTabMixin:
             field_dropout_copies=int(snap.get("field_dropout_copies", 2)),
             use_label_smoothing=bool(snap.get("use_label_smoothing", False)),
             label_smoothing_eps=float(snap.get("label_smoothing_eps", 0.05)),
+            use_fuzzy_dedup=bool(snap.get("use_fuzzy_dedup", False)),
+            fuzzy_dedup_threshold=int(snap.get("fuzzy_dedup_threshold", 92)),
         )
         pipe, clf_type, report, labels, cm, train_extras = workflow.fit_and_evaluate(
             X, y, features,
