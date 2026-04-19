@@ -468,7 +468,9 @@ class LLMClient:
         body = ""
         for attempt_idx in range(attempts):
             try:
-                with _urlreq.urlopen(req, timeout=float(timeout_sec)) as resp:
+                # nosec B310: req is a Request object whose URL prevалидирован
+                # _validate_url_and_dns() — SSRF-allowlist + TOCTOU DNS re-resolve.
+                with _urlreq.urlopen(req, timeout=float(timeout_sec)) as resp:  # nosec B310
                     body = resp.read().decode("utf-8", errors="replace")
                 return body
             except _urlerr.HTTPError as e:

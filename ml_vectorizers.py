@@ -166,10 +166,30 @@ def _extract_embedded_st_model(data: bytes) -> Any:
     if marker.exists():
         return target
     target.mkdir(parents=True, exist_ok=True)
+    # Bundle source — joblib model, защищённый SHA-256 TrustStore (model_loader.py).
+    # Дополнительный пояс безопасности: фильтр Python 3.12+ `filter='data'`
+    # отвергает abs paths, .. в путях и symlinks (CVE-2007-4559 / Zip Slip).
+    # На 3.11 fallback — ручная проверка _tar_safe_members.
     with _tar.open(fileobj=_io.BytesIO(data), mode="r:gz") as tar:
-        tar.extractall(target)
+        try:
+            tar.extractall(target, filter="data")  # py3.12+
+        except TypeError:
+            tar.extractall(target, members=_tar_safe_members(tar, target))
     marker.touch()
     return target
+
+
+def _tar_safe_members(tar: Any, target: Any) -> Any:
+    """Фильтрует tar-членов: запрещает abs paths, '..' и symlinks/hardlinks."""
+    import pathlib as _pl
+    target_resolved = _pl.Path(target).resolve()
+    for member in tar.getmembers():
+        if member.islnk() or member.issym():
+            raise ValueError(f"tar contains link member: {member.name!r}")
+        member_path = (target_resolved / member.name).resolve()
+        if not str(member_path).startswith(str(target_resolved)):
+            raise ValueError(f"tar member escapes target: {member.name!r}")
+        yield member
 
 
 # ---------------------------------------------------------------------------

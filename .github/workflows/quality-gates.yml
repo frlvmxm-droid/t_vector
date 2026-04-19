@@ -83,8 +83,10 @@ jobs:
       - name: Install bandit
         run: pip install bandit==1.7.9
 
-      - name: Bandit (HIGH severity gate)
-        run: bandit -r . --exclude ./tests,./ci,./fixtures -ll -q
+      - name: Bandit (MEDIUM+HIGH severity gate)
+        # `-ll` гейт = MEDIUM+ (как в bandit-докe). `-c pyproject.toml` подхватывает
+        # skips и помогает ловить регрессии на M-уровне (Wave 6 ужестчил конфиг).
+        run: bandit -c pyproject.toml -r . --exclude ./tests,./ci,./fixtures -ll -q
 
   supply-chain:
     name: Supply chain (pip-audit + SBOM)
