@@ -162,7 +162,7 @@ class SetFitClassifier:
         try:
             import torch
             return "cuda" if torch.cuda.is_available() else "cpu"
-        except Exception:
+        except (ImportError, RuntimeError, AttributeError):
             return "cpu"
 
     def _default_cache_dir(self) -> Path:
@@ -230,7 +230,10 @@ class SetFitClassifier:
                 self.model_name,
                 **hf_kwargs,
             )
-        except Exception as _load_err:
+        except (OSError, RuntimeError, ValueError, ImportError, KeyError) as _load_err:
+            # HuggingFace hub может поднять разные типы: EntryNotFoundError
+            # (OSError-subclass), RepositoryNotFoundError, ConnectionError и пр.
+            # Проверяем "config_setfit.json missing" через str-сигнатуру.
             if _is_setfit_config_missing_error(_load_err):
                 # Модель — обычный SentenceTransformer без SetFit-чекпоинта.
                 # Создаём SetFitModel вручную поверх тела SentenceTransformer.
@@ -264,8 +267,8 @@ class SetFitClassifier:
             if _body is not None and hasattr(_body, "max_seq_length"):
                 _body.max_seq_length = self.max_length
                 self._log(f"[SetFit] max_seq_length → {self.max_length}")
-        except Exception:
-            pass
+        except (AttributeError, TypeError):
+            pass  # setfit API изменился — параметр не обязателен
 
         # Gradient checkpointing: снижает пик VRAM за счёт пересчёта активаций
         if device == "cuda":
@@ -280,8 +283,8 @@ class SetFitClassifier:
                             _auto.gradient_checkpointing_enable()
                             self._log("[SetFit] Gradient checkpointing включён")
                             break
-            except Exception:
-                pass
+            except (AttributeError, RuntimeError, TypeError):
+                pass  # опционально — трансформер поддерживает далеко не везде
 
         self._log(
             f"[SetFit] Обучение: {len(X)} примеров | "
@@ -304,8 +307,8 @@ class SetFitClassifier:
                     _use_bf16 = True
                 else:
                     _use_fp16 = True
-            except Exception:
-                _use_fp16 = True        # fallback на fp16 при ошибке
+            except (ImportError, RuntimeError, AttributeError, ValueError, IndexError):
+                _use_fp16 = True        # fallback на fp16 при ошибке probe
 
         _train_kwargs: Dict[str, Any] = dict(
             batch_size=self.batch_size,
@@ -379,7 +382,7 @@ class SetFitClassifier:
             import torch as _torch_inf
             with _torch_inf.no_grad():
                 preds = self._model.predict(list(X))
-        except Exception:
+        except (ImportError, RuntimeError):
             preds = self._model.predict(list(X))
         # predict() может вернуть torch.Tensor или numpy array
         if hasattr(preds, "tolist"):
@@ -396,7 +399,7 @@ class SetFitClassifier:
             import torch as _torch_inf
             with _torch_inf.no_grad():
                 proba = self._model.predict_proba(list(X))
-        except Exception:
+        except (ImportError, RuntimeError):
             proba = self._model.predict_proba(list(X))
         # Может быть torch.Tensor
         if hasattr(proba, "numpy"):
@@ -690,7 +693,8 @@ def train_model_setfit(
         extras["roc_auc_macro"] = float(_roc)
         if log_cb:
             log_cb(f"[Валидация SetFit] ROC-AUC macro={float(_roc):.3f}")
-    except Exception:
+    except (ValueError, ImportError):
+        # Недостаточно классов в validation, или roc_auc_score недоступен.
         pass
 
     return clf, clf_type, rep, labels, cm, extras

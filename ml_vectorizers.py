@@ -35,7 +35,15 @@ from config.ml_constants import (
     SBERT_IMPORT_MAX_RETRIES,
 )
 from app_logger import get_logger
+from ml_sbert_bootstrap import (
+    SBERTBuiltinsPatch,
+    patch_torch_and_packaging,
+    safe_import_sentence_transformers,
+)
 import ml_compat
+
+# Backward-compat alias — external tests / utilities still import `_BuiltinsPatch`.
+_BuiltinsPatch = SBERTBuiltinsPatch
 
 _log = get_logger(__name__)
 
@@ -86,101 +94,9 @@ def _run_sbert_bootstrap_patches() -> None:
     """Применяет compat-патчи в bootstrap-контексте SBERT (не на import модуля)."""
     ml_compat.apply_early_compat_patches()
 
-class _BuiltinsPatch:
-    """Контекстный менеджер — инжектирует имена в builtins и гарантированно убирает их.
 
-    Используется в SBERTVectorizer._ensure_model() для обхода NameError в Python 3.13,
-    когда transformers-модули используют torch/nn в аннотациях без явного импорта.
-
-    Пример::
-
-        with _BuiltinsPatch() as bp:
-            bp.inject('torch')
-            bp.inject('nn')
-            from sentence_transformers import SentenceTransformer
-            model = SentenceTransformer(...)
-        # builtins очищены гарантированно, даже при исключении
-    """
-
-    def __init__(self):
-        self._injected: list = []
-
-    # ------------------------------------------------------------------
-    def inject(self, name: str) -> bool:
-        """Ищет *name* в torch-пакете и добавляет в builtins.
-
-        Возвращает True при успехе. Имя запоминается для удаления в __exit__.
-        Если имя уже есть в builtins — ничего не делает и возвращает True.
-        """
-        import builtins as _b
-        if hasattr(_b, name):
-            return True
-        import sys as _s
-        import types as _tp
-        if name in _s.modules:
-            setattr(_b, name, _s.modules[name])
-            self._injected.append(name)
-            return True
-        try:
-            import importlib as _il
-            _direct = _il.import_module(name)
-            setattr(_b, name, _direct)
-            self._injected.append(name)
-            return True
-        except ImportError:
-            pass  # прямой import не найден — пробуем источники из torch.*
-            _sources = []
-            try:
-                import torch as _t
-                _sources.append(_t)
-            except ImportError:
-                pass  # torch недоступен — остаются только уже импортированные модули/заглушка
-            try:
-                import torch.nn as _tnn; _sources.append(_tnn)
-            except ImportError:
-                pass  # подмодуль недоступен — собираем то, что есть
-            try:
-                import torch.optim as _topt; _sources.append(_topt)
-            except ImportError:
-                pass  # подмодуль недоступен — собираем то, что есть
-            try:
-                import torch.optim.lr_scheduler as _tlrs; _sources.append(_tlrs)
-            except ImportError:
-                pass  # подмодуль недоступен — собираем то, что есть
-            for _src in _sources:
-                if hasattr(_src, name):
-                    setattr(_b, name, getattr(_src, name))
-                    self._injected.append(name)
-                    return True
-        except AttributeError:
-            pass  # API torch изменился — идём к SimpleNamespace fallback (ImportError уже обработан выше)
-        # Крайний случай: заглушка SimpleNamespace.
-        # ПРЕДУПРЕЖДЕНИЕ: если transformers действительно использует это имя
-        # не как аннотацию типа, а как реальный объект — будет AttributeError.
-        import types as _tp
-        _log.warning(
-            "[ml_core] builtins.%s не найден — инжектирован SimpleNamespace-stub. "
-            "Если transformers упадёт с AttributeError — обновите torch.",
-            name,
-        )
-        setattr(_b, name, _tp.SimpleNamespace())
-        self._injected.append(name)
-        return True
-
-    # ------------------------------------------------------------------
-    def __enter__(self) -> "_BuiltinsPatch":
-        return self
-
-    def __exit__(self, *_exc_info) -> bool:
-        """Удаляет все инжектированные имена из builtins."""
-        try:
-            import builtins as _b
-            for _name in self._injected:
-                if hasattr(_b, _name):
-                    delattr(_b, _name)
-        except (AttributeError, TypeError):
-            pass  # builtins уже не содержит этого атрибута — ничего очищать не нужно
-        return False  # не подавляем исключение
+# _BuiltinsPatch / SBERTBuiltinsPatch — реализация вынесена в ml_sbert_bootstrap.
+# Здесь оставлен только backward-compat алиас (установлен в блоке импортов выше).
 
 
 # ---------------------------------------------------------------------------
@@ -445,100 +361,14 @@ class SBERTVectorizer:
             self.log_cb(msg)
 
     def _patch_torch_and_packaging(self) -> None:
-        """Патч 1+2: torch.__version__ и packaging.version.parse для Python 3.13.
+        """Делегирует patch_torch_and_packaging из ml_sbert_bootstrap (см. модуль)."""
+        patch_torch_and_packaging()
 
-        torch.__version__ может быть None на некоторых сборках, что ломает
-        packaging.version.parse() при импорте transformers. Патч идемпотентен
-        (проверяет _none_patched флаг перед применением).
-        """
-        try:
-            import sys as _sys
-            _torch_mod = _sys.modules.get("torch")
-            if _torch_mod is not None and getattr(_torch_mod, "__version__", None) is None:
-                # transformers requires >= 2.4 — "0.0.0" would make is_torch_available()
-                # return False and leave AutoModel as None → TypeError on __call__.
-                try:
-                    import importlib.metadata as _imeta
-                    _torch_mod.__version__ = _imeta.version("torch")
-                except (ImportError, Exception):  # PackageNotFoundError varies by Python version
-                    _torch_mod.__version__ = "2.4.0"
-            from packaging import version as _pv
-            if not getattr(_pv, "_none_patched", False):
-                _orig_parse = _pv.parse
-                def _safe_parse(v, *_a, **_kw):
-                    return _orig_parse("0.0.0" if v is None else v, *_a, **_kw)
-                _pv.parse = _safe_parse
-                _OrigVer = _pv.Version
-                class _SafeVersion(_OrigVer):
-                    def __init__(self, version):
-                        super().__init__("0.0.0" if version is None else version)
-                _pv.Version = _SafeVersion
-                _pv._none_patched = True
-                _log.warning(
-                    "[ml_core] packaging.version.parse/Version глобально пропатчены "
-                    "(torch.__version__ == None — см. SBERTVectorizer._patch_torch_and_packaging). "
-                    "Патч применяется один раз и идемпотентен.",
-                )
-        except (ImportError, AttributeError) as _patch_e:
-            _log.debug("_patch_torch_and_packaging: non-critical patch failed: %s", _patch_e)
-
-    def _load_sentence_transformer(self, bp: "_BuiltinsPatch") -> type:
-        """Патч 3: загружает SentenceTransformer с retry при NameError (Python 3.13).
-
-        Некоторые файлы transformers используют torch/nn/LRScheduler в аннотациях
-        без импорта — Python 3.13 падает с NameError. Стратегия: retry-цикл с
-        автоинжекцией каждого недостающего имени в builtins через _BuiltinsPatch.
-        bp — активный контекстный менеджер; очистка builtins выполняется в его __exit__.
-        """
-        def _clear_broken_tf_cache() -> None:
-            """Удаляет сломанные transformers/sentence_transformers из sys.modules.
-
-            Нужно если is_torch_available() был закэширован как False
-            (из-за torch.__version__==None при первом импорте).
-            """
-            import sys as _s
-            for _k in list(_s.modules.keys()):
-                if _k.startswith('sentence_transformers.') or _k == 'sentence_transformers':
-                    _s.modules.pop(_k, None)
-                elif _k.startswith('transformers.') or _k == 'transformers':
-                    _s.modules.pop(_k, None)
-
-        bp.inject('torch')
-        bp.inject('nn')
-
-        _SentenceTransformer = None
-        for _attempt in range(SBERT_IMPORT_MAX_RETRIES):
-            try:
-                from sentence_transformers import SentenceTransformer as _SentenceTransformer
-                break
-            except ModuleNotFoundError as _mnfe:
-                if 'sentence_transformers' in str(_mnfe) or 'sentence-transformers' in str(_mnfe):
-                    raise ImportError(
-                        "Пакет sentence-transformers не установлен.\n"
-                        "Установите: pip install sentence-transformers\n"
-                        "Или нажмите кнопку «Установить» в разделе SBERT."
-                    )
-                raise ImportError(
-                    f"Ошибка импорта зависимости sentence-transformers: {_mnfe}\n"
-                    "Попробуйте: pip install sentence-transformers transformers --upgrade"
-                )
-            except NameError as _ne:
-                _m = _re.search(r"name '(\w+)' is not defined", str(_ne))
-                if not _m:
-                    raise ImportError(f"NameError при импорте sentence-transformers: {_ne}")
-                bp.inject(_m.group(1))
-                _clear_broken_tf_cache()
-            except ImportError as _ie:
-                raise ImportError(
-                    f"Ошибка загрузки sentence-transformers: {_ie}\n"
-                    "Попробуйте: pip install sentence-transformers transformers --upgrade"
-                )
-        else:
-            raise ImportError(
-                f"Не удалось загрузить sentence-transformers после {SBERT_IMPORT_MAX_RETRIES} попыток.\n"
-                "Попробуйте: pip install transformers --upgrade"
-            )
-        return _SentenceTransformer
+    def _load_sentence_transformer(self, bp: "SBERTBuiltinsPatch") -> type:
+        """Делегирует safe_import_sentence_transformers из ml_sbert_bootstrap."""
+        return safe_import_sentence_transformers(
+            bp, max_retries=SBERT_IMPORT_MAX_RETRIES, log_cb=self.log_cb,
+        )
 
     def _resolve_device(self) -> Optional[str]:
         """Определяет аргумент device для SentenceTransformer по self.device.
@@ -569,7 +399,7 @@ class SBERTVectorizer:
                     return "cuda"
                 self._log("[SBERT] ⚠️ CUDA запрошена, но недоступна — переключаюсь на CPU")
                 return "cpu"
-            except Exception as _e:
+            except (ImportError, RuntimeError, AttributeError) as _e:
                 self._log(f"[SBERT] ⚠️ Ошибка инициализации torch ({_e}) — используется CPU")
                 return "cpu"
         # "auto": SentenceTransformer сам выбирает устройство (CUDA → CPU)
@@ -692,8 +522,8 @@ class SBERTVectorizer:
         except EnvironmentError:
             # Нормальная ситуация: модель не в кэше (LocalEntryNotFoundError → EnvironmentError)
             return False
-        except Exception as ex:
-            # Неожиданная ошибка (права доступа, диск переполнен и т.д.) — логируем
+        except (OSError, ImportError, RuntimeError) as ex:
+            # Неожиданная ошибка (права доступа, диск переполнен, HF hub недоступен) — логируем
             self._log(f"[SBERT] ⚠️ Ошибка при проверке кэша: {ex}")
             return False
 
@@ -1511,7 +1341,9 @@ class Lemmatizer(BaseEstimator, TransformerMixin):
             return self._morph
         except ImportError:
             pass
-        except Exception:
+        except (OSError, RuntimeError, AttributeError, ValueError):
+            # Библиотека установлена, но инициализация не удалась (повреждённый словарь,
+            # несовместимая версия). Не фатально — пробуем pymorphy2.
             pass
         # Fallback: pymorphy2 (legacy; требует compat-патча на Python 3.13).
         try:
@@ -1522,7 +1354,8 @@ class Lemmatizer(BaseEstimator, TransformerMixin):
             self._backend = "pymorphy2"
         except ImportError:
             self._available = False
-        except Exception:
+        except (OSError, RuntimeError, AttributeError, ValueError):
+            # См. комментарий выше для pymorphy3 — лемматизация опциональна.
             self._available = False
         return self._morph
 
