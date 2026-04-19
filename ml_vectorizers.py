@@ -184,6 +184,109 @@ class _BuiltinsPatch:
 
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Опциональное встраивание весов SBERT-модели в .joblib bundle.
+#
+# По умолчанию веса модели НЕ сериализуются — это осознанное решение, так как
+# bundle может вырасти до 2 GB и более. Включается флагом embed_weights=True:
+# тогда веса упаковываются в tar.gz и складываются в поле _model_archive.
+#
+# Десериализованный vectorizer на первом transform() распаковывает архив в
+# локальный кэш (~/.classification_tool/sbert_embedded/<sha16>/) и подгружает
+# SentenceTransformer из локальной папки, минуя HuggingFace-кэш и сеть. Это
+# обеспечивает airgapped-deploy из единого .joblib-файла.
+# ---------------------------------------------------------------------------
+
+# Локальный кэш распакованных встроенных SBERT-весов (переиспользуется между
+# сессиями; ключ — sha256 архива, распакованный один раз)
+_EMBEDDED_SBERT_CACHE_DIR = APP_ROOT / ".sbert_embedded"
+# Порог предупреждения при упаковке больших моделей
+_EMBEDDED_WEIGHTS_WARN_BYTES = 500 * 1024 * 1024  # 500 MB
+
+
+def _serialize_st_model(model: Any, log_cb: Optional[Callable[[str], None]] = None) -> Optional[bytes]:
+    """Упаковывает SentenceTransformer в in-memory tar.gz (веса + config).
+
+    Использует SentenceTransformer.save(dir) — стандартный формат HuggingFace.
+    Возвращает None если упаковка невозможна (например, модель не загружена).
+    """
+    if model is None:
+        return None
+    import io as _io
+    import tarfile as _tar
+    import tempfile as _tmp
+    with _tmp.TemporaryDirectory(prefix="brt_sbert_dump_") as tmp_dir:
+        try:
+            model.save(tmp_dir)
+        except Exception as exc:  # noqa: BLE001 — ST.save() may raise arbitrary IO/transformers errors
+            _log.warning("SentenceTransformer.save() failed: %s", exc)
+            return None
+        buf = _io.BytesIO()
+        with _tar.open(fileobj=buf, mode="w:gz") as tar:
+            tar.add(tmp_dir, arcname=".")
+        data = buf.getvalue()
+    if log_cb and len(data) > _EMBEDDED_WEIGHTS_WARN_BYTES:
+        log_cb(
+            f"[SBERT] ⚠️ Встроенные веса: {len(data) // (1024 * 1024)} МБ — "
+            f"bundle будет соответствующего размера"
+        )
+    return data
+
+
+def _extract_embedded_st_model(data: bytes) -> Any:
+    """Распаковывает tar.gz с весами в локальный кэш и возвращает путь к папке.
+
+    Путь детерминирован по sha256 содержимого — повторная распаковка
+    одного и того же архива не выполняется.
+    """
+    import hashlib as _hash
+    import io as _io
+    import pathlib as _pl
+    import tarfile as _tar
+    digest = _hash.sha256(data).hexdigest()[:16]
+    target = _EMBEDDED_SBERT_CACHE_DIR / digest
+    marker = target / ".extracted_ok"
+    if marker.exists():
+        return target
+    target.mkdir(parents=True, exist_ok=True)
+    with _tar.open(fileobj=_io.BytesIO(data), mode="r:gz") as tar:
+        tar.extractall(target)
+    marker.touch()
+    return target
+
+
+# ---------------------------------------------------------------------------
+# Общие pickling-helpers для SBERT-классов (устраняют DRY-дублирование
+# __getstate__ / __setstate__ между SBERTVectorizer и PerFieldSBERTVectorizer).
+# ---------------------------------------------------------------------------
+
+# Атрибуты, которые всегда обнуляются при pickling (не сериализуемые callbacks)
+_SBERT_NONPICKLE_COMMON = ("log_cb", "progress_cb")
+
+
+def _sbert_make_state(obj_dict: Dict[str, Any], *model_attrs: str) -> Dict[str, Any]:
+    """Формирует сериализуемый snapshot: обнуляет callbacks и все ``model_attrs``."""
+    state = obj_dict.copy()
+    for attr in _SBERT_NONPICKLE_COMMON:
+        if attr in state:
+            state[attr] = None
+    for attr in model_attrs:
+        if attr in state:
+            state[attr] = None
+    return state
+
+
+def _sbert_restore_defaults(obj: Any, *model_attrs: str, **defaults: Any) -> None:
+    """Восстанавливает callbacks, model-поля в None и backfill missing атрибутов."""
+    for attr in _SBERT_NONPICKLE_COMMON:
+        setattr(obj, attr, None)
+    for attr in model_attrs:
+        setattr(obj, attr, None)
+    for attr, default in defaults.items():
+        if not hasattr(obj, attr):
+            setattr(obj, attr, default)
+
+
 class SBERTVectorizer:
     """
     Sklearn-совместимый векторайзер на основе Sentence Transformers.
@@ -191,24 +294,24 @@ class SBERTVectorizer:
     fit()       — проверяет кэш, при необходимости скачивает, загружает в память.
     transform() — кодирует тексты батчами с прогрессом через log_cb / progress_cb.
 
-    Сериализация (ВАЖНО):
-      • В .joblib сохраняются ТОЛЬКО имя модели, batch_size, device, prefix-
-        таблица. Сами веса (~400 MB – 2 GB) НЕ пиклятся — это осознанное
-        архитектурное решение, иначе bundle будет неподъёмным.
-      • При загрузке из .joblib SBERTVectorizer подгружает веса из локального
-        кэша HuggingFace (SBERT_LOCAL_DIR / cache_dir). Это означает жёсткое
-        требование к deployment-окружению:
-          1) либо кэш должен быть физически доступен (bind-mount, hf-cache dir),
-          2) либо при первом transform() нужен интернет-доступ к huggingface.co
-             для повторной загрузки.
-        Если этого не обеспечено, transform() упадёт с OSError / ConnectionError.
-      • В airgapped-деплоях рекомендуется заранее выполнить
-        `SentenceTransformer(model_name).save(...)` и выставить cache_dir
-        на локальную папку.
+    Сериализация:
+      По умолчанию (``embed_weights=False``) в .joblib сохраняются ТОЛЬКО имя
+      модели, batch_size, device, prefix-таблица. Сами веса (~400 MB – 2 GB)
+      НЕ пиклятся — чтобы bundle оставался разумного размера. При загрузке
+      SBERTVectorizer подгружает веса из локального кэша HuggingFace
+      (SBERT_LOCAL_DIR / cache_dir) или скачивает заново.
+
+      С ``embed_weights=True`` веса упаковываются в tar.gz и сохраняются
+      прямо в bundle. При загрузке архив распаковывается в локальный кэш
+      (APP_ROOT/.sbert_embedded/<hash>/), SentenceTransformer создаётся из
+      этой папки — сеть и внешний HF-кэш не нужны. Подходит для airgapped-
+      деплоев, но увеличивает размер bundle на размер модели.
 
     Параметры:
-        log_cb      — callback(str): вызывается с текстовыми строками прогресса
-        progress_cb — callback(float, str): вызывается с (%, статус) как у ui_prog
+        log_cb         — callback(str): вызывается с текстовыми строками прогресса
+        progress_cb    — callback(float, str): вызывается с (%, статус) как у ui_prog
+        embed_weights  — True: упаковать веса в bundle (airgapped-friendly,
+                         больший размер). False (по умолч.): только имя модели.
     """
 
     def __init__(
@@ -220,6 +323,7 @@ class SBERTVectorizer:
         cache_dir: Optional[Any] = None,
         device: str = "auto",
         progress_range: Tuple[float, float] = (78.0, 90.0),
+        embed_weights: bool = False,
     ):
         self.model_name = model_name
         self.batch_size = batch_size
@@ -233,7 +337,13 @@ class SBERTVectorizer:
         # Передаётся снаружи, чтобы не захардкоживать 78..90% для разных сценариев
         # (обучение, кластеризация, apply).
         self.progress_range = progress_range
+        # embed_weights: если True — веса модели упаковываются в bundle при
+        # pickling (см. _serialize_st_model / _extract_embedded_st_model).
+        self.embed_weights = embed_weights
         self._model = None  # не сериализуем
+        # Архив весов (tar.gz bytes) — заполняется только при pickling с
+        # embed_weights=True, используется при _ensure_model() после unpickle.
+        self._model_archive: Optional[bytes] = None
 
     # --- sklearn-compatible interface ---
 
@@ -527,6 +637,23 @@ class SBERTVectorizer:
         with _BuiltinsPatch() as _bp:
             SentenceTransformer = self._load_sentence_transformer(_bp)
 
+            # --- 0. Встроенные веса (embed_weights=True при сохранении) ---
+            archive = getattr(self, "_model_archive", None)
+            if archive:
+                target = _extract_embedded_st_model(archive)
+                self._log(f"[SBERT] Использую встроенные веса из {target} ✅")
+                if self.progress_cb:
+                    self.progress_cb(64.0, "SBERT: загрузка встроенных весов…")
+                device = self._resolve_device()
+                self._model = SentenceTransformer(str(target), device=device)
+                self._log(
+                    f"[SBERT] Модель загружена ✅ "
+                    f"(dim={self._model.get_sentence_embedding_dimension()})"
+                )
+                if self.progress_cb:
+                    self.progress_cb(76.0, "SBERT готов, обучаю классификатор…")
+                return
+
             # --- 1. Проверить кэш HuggingFace ---
             cached = self._check_cache()
             if cached:
@@ -611,23 +738,26 @@ class SBERTVectorizer:
         finally:
             _stop.set()
 
-    # --- serialization: не сохраняем веса модели в joblib ---
+    # --- serialization ---
 
     def __getstate__(self):
-        state = self.__dict__.copy()
-        state["_model"] = None
-        state["log_cb"] = None
-        state["progress_cb"] = None
+        state = _sbert_make_state(self.__dict__, "_model")
+        # embed_weights: пакуем веса в tar.gz, если модель уже загружена
+        if getattr(self, "embed_weights", False) and self._model is not None:
+            archive = _serialize_st_model(self._model, log_cb=self.log_cb)
+            state["_model_archive"] = archive
+        else:
+            state["_model_archive"] = getattr(self, "_model_archive", None)
         return state
 
     def __setstate__(self, state):
         self.__dict__.update(state)
-        self._model = None
-        self.log_cb = None
-        self.progress_cb = None
-        # Совместимость со старыми моделями без поля device
-        if not hasattr(self, "device"):
-            self.device = "auto"
+        _sbert_restore_defaults(
+            self, "_model",
+            device="auto",
+            embed_weights=False,
+            _model_archive=None,
+        )
 
     @staticmethod
     def is_available() -> bool:
@@ -734,6 +864,7 @@ class PerFieldSBERTVectorizer(BaseEstimator, TransformerMixin):
         cache_dir: Optional[Any] = None,
         device: str = "auto",
         progress_range: Tuple[float, float] = (78.0, 90.0),
+        embed_weights: bool = False,
     ):
         self.model_name = model_name
         self.base_weights = base_weights or {}
@@ -744,6 +875,10 @@ class PerFieldSBERTVectorizer(BaseEstimator, TransformerMixin):
         self.cache_dir = cache_dir
         self.device = device
         self.progress_range = progress_range
+        # embed_weights пробрасывается во внутренний SBERTVectorizer — см.
+        # _ensure_sbert(). При pickling этот флаг также читается __getstate__
+        # для упаковки весов, если внутренний _sbert уже был загружен.
+        self.embed_weights = embed_weights
         # Заполняется при fit()
         self._active: List[Tuple[str, str, int]] = []
         self._embedding_dim: Optional[int] = None
@@ -794,7 +929,13 @@ class PerFieldSBERTVectorizer(BaseEstimator, TransformerMixin):
                 cache_dir=str(self.cache_dir or SBERT_LOCAL_DIR),
                 device=self.device,
                 progress_range=self.progress_range,
+                embed_weights=getattr(self, "embed_weights", False),
             )
+            # Если в self._model_archive лежит tar.gz с embedded-весами,
+            # прокидываем его во внутренний SBERTVectorizer до _ensure_model().
+            archive = getattr(self, "_model_archive", None)
+            if archive:
+                self._sbert._model_archive = archive
         else:
             # Восстанавливаем колбэки (сбрасываются при десериализации)
             self._sbert.log_cb = self.log_cb
@@ -885,25 +1026,34 @@ class PerFieldSBERTVectorizer(BaseEstimator, TransformerMixin):
         return self.fit(X, y).transform(X)
 
     # ------------------------------------------------------------------
-    # Сериализация: не сохраняем веса модели в joblib
+    # Сериализация (см. общие _sbert_make_state / _sbert_restore_defaults).
+    # По умолчанию веса не сохраняются; при embed_weights=True tar.gz-архив
+    # модели копируется из внутреннего SBERTVectorizer.
     # ------------------------------------------------------------------
 
     def __getstate__(self):
-        state = self.__dict__.copy()
-        state["_sbert"] = None
-        state["log_cb"] = None
-        state["progress_cb"] = None
+        state = _sbert_make_state(self.__dict__, "_sbert")
+        archive: Optional[bytes] = None
+        if getattr(self, "embed_weights", False) and self._sbert is not None \
+                and self._sbert._model is not None:
+            archive = _serialize_st_model(self._sbert._model, log_cb=self.log_cb)
+        # fallback: re-use уже имеющийся архив, если он был загружен ранее
+        if archive is None:
+            archive = getattr(self, "_model_archive", None)
+            if archive is None and self._sbert is not None:
+                archive = getattr(self._sbert, "_model_archive", None)
+        state["_model_archive"] = archive
         return state
 
     def __setstate__(self, state):
         self.__dict__.update(state)
-        self._sbert = None
-        self.log_cb = None
-        self.progress_cb = None
-        if not hasattr(self, "device"):
-            self.device = "auto"
-        if not hasattr(self, "normalize"):
-            self.normalize = True
+        _sbert_restore_defaults(
+            self, "_sbert",
+            device="auto",
+            normalize=True,
+            embed_weights=False,
+            _model_archive=None,
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -298,17 +298,93 @@ def clean_training_data(
     }
 
 
+# Порог количества строк, при котором имеет смысл переключаться на LSH
+# вместо O(n²) блочного сравнения. Ниже этого значения накладные расходы
+# на построение MinHash-индекса превышают экономию.
+_LSH_N_THRESHOLD = 2000
+# Размер символьной k-шинглы для MinHash. 5 — классическое значение для
+# near-duplicate detection на естественных текстах.
+_LSH_SHINGLE_SIZE = 5
+# Число перестановок MinHash. 128 — стандартный компромисс между точностью
+# и скоростью (Jaccard error ≈ 1/sqrt(128) ≈ 0.088).
+_LSH_NUM_PERM = 128
+
+
+def _datasketch_available() -> bool:
+    """Проверяет доступность ``datasketch`` (опциональная зависимость)."""
+    try:
+        import datasketch  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def _minhash_candidate_pairs(
+    texts: list[str],
+    labels: list[str],
+    *,
+    jaccard_threshold: float,
+    num_perm: int = _LSH_NUM_PERM,
+    shingle_size: int = _LSH_SHINGLE_SIZE,
+) -> set[tuple[int, int]]:
+    """Возвращает множество пар-кандидатов через MinHash LSH.
+
+    Только пары (i, j) с i < j и разными метками. Точный cosine-фильтр
+    по TF-IDF применяется вызывающей стороной.
+    """
+    from datasketch import MinHash, MinHashLSH
+
+    sigs: list[MinHash] = []
+    for text in texts:
+        mh = MinHash(num_perm=num_perm)
+        if len(text) >= shingle_size:
+            for i in range(len(text) - shingle_size + 1):
+                mh.update(text[i:i + shingle_size].encode("utf-8"))
+        else:
+            mh.update(text.encode("utf-8"))
+        sigs.append(mh)
+
+    lsh = MinHashLSH(threshold=jaccard_threshold, num_perm=num_perm)
+    for idx, sig in enumerate(sigs):
+        lsh.insert(str(idx), sig)
+
+    candidates: set[tuple[int, int]] = set()
+    for i, sig in enumerate(sigs):
+        for j_str in lsh.query(sig):
+            j = int(j_str)
+            if i < j and labels[i] != labels[j]:
+                candidates.add((i, j))
+    return candidates
+
+
 def detect_near_duplicate_conflicts(
     X: list[str],
     y: list[str],
     threshold: float = 0.92,
     max_pairs: int = 200,
     log_fn: Any | None = None,
+    *,
+    use_lsh: bool | None = None,
 ) -> list[tuple[str, str, str, str, float]]:
     """Находит пары почти одинаковых текстов с разными метками.
 
     Использует TF-IDF (char 2-4 n-grams) + косинусное сходство.
     Для датасетов > 5 000 строк анализирует случайную выборку 5 000.
+
+    При ``use_lsh=True`` (или ``None`` + больших выборках ≥ 2 000 строк) сначала
+    генерирует кандидатов через MinHash LSH (Jaccard на 5-шинглах), затем
+    применяет точный cosine-фильтр только к ним — это ускоряет анализ на
+    порядки для больших корпусов. При отсутствии ``datasketch`` автоматически
+    падает обратно на блочный O(n²) проход.
+
+    Args:
+        X, y: тексты и метки.
+        threshold: порог cosine-сходства TF-IDF (финальный фильтр).
+        max_pairs: максимум пар в результате.
+        log_fn: опциональный логгер.
+        use_lsh: ``None`` → авто (LSH при n ≥ 2 000 и доступном ``datasketch``);
+                 ``True`` → форсировать LSH (с fallback при отсутствии deps);
+                 ``False`` → всегда O(n²).
 
     Returns:
         Список кортежей (text1, text2, label1, label2, similarity),
@@ -346,7 +422,44 @@ def detect_near_duplicate_conflicts(
         return []
 
     _n = len(_X)
-    _pairs: list[tuple[str, str, str, str, float]] = []
+
+    # Решаем: LSH или O(n²) блочный проход
+    _lsh_enabled = use_lsh
+    if _lsh_enabled is None:
+        _lsh_enabled = _n >= _LSH_N_THRESHOLD and _datasketch_available()
+    elif _lsh_enabled and not _datasketch_available():
+        if log_fn:
+            log_fn("  [ND] datasketch не установлен — fallback на O(n²)")
+        _lsh_enabled = False
+
+    if _lsh_enabled:
+        # Jaccard-порог кандидатов: заведомо слабее cosine-порога, чтобы не
+        # потерять match'и из-за систематической недооценки Jaccard vs cosine.
+        _jaccard_thresh = max(0.3, float(threshold) - 0.3)
+        if log_fn:
+            log_fn(
+                f"  [ND] LSH-режим: n={_n}, Jaccard≥{_jaccard_thresh:.2f}, "
+                f"exact-filter cosine≥{threshold:.2f}"
+            )
+        _candidates = _minhash_candidate_pairs(
+            _X, _y, jaccard_threshold=_jaccard_thresh,
+        )
+        _pairs: list[tuple[str, str, str, str, float]] = []
+        # Точная фильтрация кандидатов по TF-IDF cosine
+        for _i, _j in _candidates:
+            _s = float(_cos_sim(_M[_i], _M[_j])[0, 0])
+            if _s >= threshold:
+                _pairs.append((_X[_i], _X[_j], _y[_i], _y[_j], _s))
+        _pairs.sort(key=lambda _p: -_p[4])
+        if log_fn:
+            log_fn(
+                f"  [ND] LSH: {len(_candidates)} кандидатов → {len(_pairs)} "
+                f"после exact-фильтра"
+            )
+        return _pairs[:max_pairs]
+
+    # O(n²) блочный fallback
+    _pairs = []
     _BLOCK = 500
 
     for _bi_start in range(0, _n, _BLOCK):

@@ -74,3 +74,9 @@ matplotlib>=3.7         # scatter-плот для кластеризации в 
 #   Если rapidfuzz не установлен — fuzzy_string_dedup прозрачно падает в
 #   точный strip+casefold дедуп (без token_sort_ratio). Сам train_model
 #   этого пакета не требует — включается флагом use_fuzzy_dedup=True.
+
+# MinHash LSH для быстрого детектора конфликтующих дубликатов
+# (ml_diagnostics.detect_near_duplicate_conflicts, use_lsh=True):
+#   pip install "datasketch>=1.6"
+#   Для выборок ≥ 2 000 строк LSH-режим включается автоматически при
+#   наличии пакета; иначе используется O(n²) блочный fallback.
