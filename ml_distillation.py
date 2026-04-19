@@ -47,6 +47,7 @@ import numpy as np
 from sklearn.pipeline import Pipeline
 
 from app_logger import get_logger
+from config.ml_constants import DISTILL_EPS
 
 _log = get_logger(__name__)
 
@@ -107,11 +108,10 @@ def distill_soft_labels(
 
     # Температурное сглаживание (работает на логитах, аппроксимируем через log)
     if temperature != 1.0:
-        eps = 1e-10
-        log_p = np.log(np.clip(teacher_proba_raw, eps, 1.0)) / float(temperature)
+        log_p = np.log(np.clip(teacher_proba_raw, DISTILL_EPS, 1.0)) / float(temperature)
         log_p -= log_p.max(axis=1, keepdims=True)
         teacher_proba_raw = np.exp(log_p)
-        teacher_proba_raw /= teacher_proba_raw.sum(axis=1, keepdims=True).clip(eps)
+        teacher_proba_raw /= teacher_proba_raw.sum(axis=1, keepdims=True).clip(DISTILL_EPS)
 
     # Выровнять классы учителя → порядку classes студента
     teacher_proba = np.zeros((len(X), n_classes))

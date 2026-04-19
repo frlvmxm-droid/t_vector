@@ -31,17 +31,19 @@ from config.ml_constants import (
     SMOTE_MAX_MULTIPLIER, SMOTE_IMBALANCE_RATIO,
     CONF_THRESH_90_PERCENTILE, CONF_THRESH_75_PERCENTILE, CONF_THRESH_50_PERCENTILE,
     PR_MIN_PRECISION,
+    NN_MIX_BETA_ALPHA as _NN_MIX_BETA_ALPHA,
+    NN_MIX_SELF_DIST_EPS as _NN_MIX_SELF_DIST_EPS,
+    FUZZY_DEDUP_THRESHOLD_DEFAULT,
+    FIELD_DROPOUT_PROB_DEFAULT,
+    FIELD_DROPOUT_COPIES_DEFAULT,
+    LABEL_SMOOTHING_EPS_DEFAULT,
+    TEMP_SCALE_EPS,
 )
 from app_logger import get_logger
 
 _log = get_logger(__name__)
 
-# --- nn_mix (SMOTE-подобное смешение для текстов) --------------------------
-# Параметры Beta(α, α): α<1 предпочитает крайние смеси (как classic SMOTE weight).
-_NN_MIX_BETA_ALPHA = 0.4
-# Порог косинусного расстояния для отбрасывания самого себя при поиске ближайшего соседа.
-_NN_MIX_SELF_DIST_EPS = 1e-6
-# TF-IDF для построения индекса NN: малая модель, char_wb 2..4.
+# TF-IDF для построения индекса NN (nn_mix): малая модель, char_wb 2..4.
 _NN_MIX_NGRAM_RANGE = (2, 4)
 _NN_MIX_MAX_FEATURES = 15_000
 # ---------------------------------------------------------------------------
@@ -133,7 +135,7 @@ def fuzzy_string_dedup(
     X: List[str],
     y: List[str],
     *,
-    threshold: int = 92,
+    threshold: int = FUZZY_DEDUP_THRESHOLD_DEFAULT,
     log_cb: Optional[Callable[[str], None]] = None,
 ) -> Tuple[List[str], List[str], int]:
     """Near-duplicate dedup в паре (X, y) по rapidfuzz.token_sort_ratio.
@@ -454,8 +456,8 @@ _DROPOUT_FIELD_TAGS = frozenset(
 def _field_dropout_augment(
     Xtr: List[str],
     ytr: List[str],
-    dropout_prob: float = 0.15,
-    n_copies: int = 2,
+    dropout_prob: float = FIELD_DROPOUT_PROB_DEFAULT,
+    n_copies: int = FIELD_DROPOUT_COPIES_DEFAULT,
     random_state: int = 42,
     log_cb: Optional[Callable[[str], None]] = None,
 ) -> Tuple[List[str], List[str]]:
@@ -917,12 +919,12 @@ def compute_temperature_scaling(
     def _nll(T: float) -> float:
         if T <= 0.01:
             return 1e10
-        _scaled = np.power(np.clip(proba, 1e-10, 1.0), 1.0 / T)
+        _scaled = np.power(np.clip(proba, TEMP_SCALE_EPS, 1.0), 1.0 / T)
         _sums = _scaled.sum(axis=1, keepdims=True)
         _sums[_sums == 0] = 1.0
         _p_cal = _scaled / _sums
         _p_correct = _p_cal[np.arange(len(_y_idx)), _y_idx]
-        return float(-np.mean(np.log(np.clip(_p_correct, 1e-10, 1.0))))
+        return float(-np.mean(np.log(np.clip(_p_correct, TEMP_SCALE_EPS, 1.0))))
 
     _res = minimize_scalar(_nll, bounds=(0.1, 5.0), method="bounded")
     _T = float(_res.x)
@@ -1240,12 +1242,12 @@ def train_model(
     run_cv: bool = False,
     use_hard_negatives: bool = False,
     use_field_dropout: bool = False,
-    field_dropout_prob: float = 0.15,
-    field_dropout_copies: int = 2,
+    field_dropout_prob: float = FIELD_DROPOUT_PROB_DEFAULT,
+    field_dropout_copies: int = FIELD_DROPOUT_COPIES_DEFAULT,
     use_label_smoothing: bool = False,
-    label_smoothing_eps: float = 0.05,
+    label_smoothing_eps: float = LABEL_SMOOTHING_EPS_DEFAULT,
     use_fuzzy_dedup: bool = False,
-    fuzzy_dedup_threshold: int = 92,
+    fuzzy_dedup_threshold: int = FUZZY_DEDUP_THRESHOLD_DEFAULT,
 ) -> Tuple[Pipeline, str, str, Optional[List[str]], Optional[Any], Dict]:
     """
     Обучает Pipeline(features → classifier).

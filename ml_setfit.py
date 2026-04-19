@@ -24,21 +24,20 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
+from config.ml_constants import SETFIT_VRAM_PROFILES
+
 # Снижает фрагментацию GPU-памяти; рекомендовано самим PyTorch при OOM.
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 
 # ---------------------------------------------------------------------------
-# VRAM-профили: дефолты можно переопределить env-переменными (см. docstring).
+# VRAM-профили: дефолты определены в config.ml_constants.SETFIT_VRAM_PROFILES;
+# env-override-ы (см. docstring) применяются поверх. Локальный алиас
+# `VRAM_PROFILES` оставлен для обратной совместимости — тесты и внешние
+# утилиты могут monkeypatch-ить его.
 # ---------------------------------------------------------------------------
 
-VRAM_PROFILES: tuple[tuple[float, int, int], ...] = (
-    # (min_vram_gb, max_train, max_pairs)
-    (38.0, 30_000, 2_000_000),  # A100 40GB / H100 — серверный класс
-    (24.0, 15_000, 800_000),    # RTX 3090 / 4090 / A6000
-    (12.0, 8_000,  400_000),    # RTX 4070Ti / 4080
-    (0.0,  5_000,  200_000),    # RTX 4060Ti 8GB и ниже / CPU
-)
+VRAM_PROFILES: tuple[tuple[float, int, int], ...] = SETFIT_VRAM_PROFILES
 
 
 def _pick_vram_profile(vram_gb: float) -> tuple[int, int]:
