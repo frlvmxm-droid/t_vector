@@ -197,8 +197,20 @@ def _clear_broken_tf_cache() -> None:
 
     Нужно когда ``is_torch_available()`` был закэширован как ``False``
     (например, из-за ``torch.__version__ is None`` при первом импорте).
+
+    Сначала сбрасывается module-level кэш ``_torch_available`` /
+    ``_torch_version`` в ``transformers.utils.import_utils``: иначе при
+    повторном импорте transformers увидит "torch недоступен" даже после
+    ``patch_torch_and_packaging()``.
     """
     import sys as _s
+    _iu = _s.modules.get("transformers.utils.import_utils")
+    if _iu is not None:
+        for _attr in ("_torch_available", "_torch_version"):
+            try:
+                delattr(_iu, _attr)
+            except (AttributeError, TypeError):
+                pass
     for _k in list(_s.modules.keys()):
         if _k.startswith("sentence_transformers.") or _k == "sentence_transformers":
             _s.modules.pop(_k, None)

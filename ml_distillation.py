@@ -106,12 +106,15 @@ def distill_soft_labels(
 
     teacher_proba_raw = teacher.predict_proba(X)
 
-    # Температурное сглаживание (работает на логитах, аппроксимируем через log)
+    # Температурное сглаживание (работает на логитах, аппроксимируем через log).
+    # Численно устойчиво даже при T → ∞: используем logsumexp-нормализацию
+    # вместо clip-фоллбэка, иначе underflow в exp + деление на DISTILL_EPS
+    # дают ошибку ×1e10.
     if temperature != 1.0:
         log_p = np.log(np.clip(teacher_proba_raw, DISTILL_EPS, 1.0)) / float(temperature)
         log_p -= log_p.max(axis=1, keepdims=True)
-        teacher_proba_raw = np.exp(log_p)
-        teacher_proba_raw /= teacher_proba_raw.sum(axis=1, keepdims=True).clip(DISTILL_EPS)
+        log_z = np.log(np.exp(log_p).sum(axis=1, keepdims=True))
+        teacher_proba_raw = np.exp(log_p - log_z)
 
     # Выровнять классы учителя → порядку classes студента
     teacher_proba = np.zeros((len(X), n_classes))
