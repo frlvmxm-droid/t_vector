@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import math
 import threading
+import warnings
 from collections import Counter
+from dataclasses import dataclass, fields as _dc_fields
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -47,6 +49,51 @@ _log = get_logger(__name__)
 _NN_MIX_NGRAM_RANGE = (2, 4)
 _NN_MIX_MAX_FEATURES = 15_000
 # ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True, frozen=True)
+class TrainingOptions:
+    """Конфигурация аугментации/калибровки/CV для :func:`train_model`.
+
+    Заменяет плоский список из 13 kwargs-флагов. Дефолты берутся из
+    :mod:`config.ml_constants`, что позволяет monkeypatch-ить их в тестах
+    без правки конкретных call-sites.
+
+    Поля:
+        calib_method          — метод калибровки вероятностей:
+                                "sigmoid" (Platt) или "isotonic".
+        use_smote             — текстовый оверсэмплинг редких классов.
+        oversample_strategy   — "cap" | "augment_light" | "augment_medium".
+        max_dup_per_sample    — жёсткий потолок дубликатов на пример.
+        run_cv                — 5-fold кросс-валидация до обучения.
+        use_hard_negatives    — оверсэмплинг граничных пар между близкими классами.
+        use_field_dropout     — генерация копий с удалёнными [TAG]-секциями.
+        field_dropout_prob    — вероятность удаления каждой секции.
+        field_dropout_copies  — количество генерируемых копий на пример.
+        use_label_smoothing   — сглаживание one-hot меток.
+        label_smoothing_eps   — интенсивность сглаживания.
+        use_fuzzy_dedup       — дедупликация по rapidfuzz.
+        fuzzy_dedup_threshold — порог схожести (0..100), выше = строже.
+    """
+
+    calib_method: str = "sigmoid"
+    use_smote: bool = True
+    oversample_strategy: str = "cap"
+    max_dup_per_sample: int = 5
+    run_cv: bool = False
+    use_hard_negatives: bool = False
+    use_field_dropout: bool = False
+    field_dropout_prob: float = FIELD_DROPOUT_PROB_DEFAULT
+    field_dropout_copies: int = FIELD_DROPOUT_COPIES_DEFAULT
+    use_label_smoothing: bool = False
+    label_smoothing_eps: float = LABEL_SMOOTHING_EPS_DEFAULT
+    use_fuzzy_dedup: bool = False
+    fuzzy_dedup_threshold: int = FUZZY_DEDUP_THRESHOLD_DEFAULT
+
+
+_TRAINING_OPTIONS_FIELDS: frozenset[str] = frozenset(
+    f.name for f in _dc_fields(TrainingOptions)
+)
 
 
 def make_classifier(
@@ -1224,6 +1271,40 @@ def _estimate_model_size_bytes(
         return None
 
 
+def _resolve_training_options(
+    options: Optional[TrainingOptions],
+    legacy_kwargs: Dict[str, Any],
+) -> TrainingOptions:
+    """Валидирует совместимость *options* и legacy-kwargs.
+
+    Если ``options`` передан — legacy_kwargs запрещены (жёсткий конфликт).
+    Иначе из legacy_kwargs собирается ``TrainingOptions``, сопровождаясь
+    ``DeprecationWarning``. Незнакомые ключи → :class:`TypeError`.
+    """
+    if options is not None:
+        if legacy_kwargs:
+            raise TypeError(
+                "train_model(): нельзя одновременно передавать options=TrainingOptions "
+                f"и legacy-kwargs ({sorted(legacy_kwargs)}). Выберите один API."
+            )
+        return options
+    if not legacy_kwargs:
+        return TrainingOptions()
+    unknown = set(legacy_kwargs) - _TRAINING_OPTIONS_FIELDS
+    if unknown:
+        raise TypeError(
+            f"train_model(): неизвестные keyword-аргументы: {sorted(unknown)}"
+        )
+    warnings.warn(
+        "Passing " + ", ".join(sorted(legacy_kwargs))
+        + " as keyword arguments is deprecated; "
+        "use options=TrainingOptions(...) instead.",
+        DeprecationWarning,
+        stacklevel=3,
+    )
+    return TrainingOptions(**legacy_kwargs)
+
+
 def train_model(
     X: List[str],
     y: List[str],
@@ -1233,24 +1314,21 @@ def train_model(
     balanced: bool,
     test_size: float,
     random_state: int,
-    calib_method: str = "sigmoid",
+    *,
+    options: Optional[TrainingOptions] = None,
     progress_cb: Optional[Callable[[float, str], None]] = None,
-    use_smote: bool = True,
-    oversample_strategy: str = "cap",
-    max_dup_per_sample: int = 5,
     log_cb: Optional[Callable[[str], None]] = None,
-    run_cv: bool = False,
-    use_hard_negatives: bool = False,
-    use_field_dropout: bool = False,
-    field_dropout_prob: float = FIELD_DROPOUT_PROB_DEFAULT,
-    field_dropout_copies: int = FIELD_DROPOUT_COPIES_DEFAULT,
-    use_label_smoothing: bool = False,
-    label_smoothing_eps: float = LABEL_SMOOTHING_EPS_DEFAULT,
-    use_fuzzy_dedup: bool = False,
-    fuzzy_dedup_threshold: int = FUZZY_DEDUP_THRESHOLD_DEFAULT,
+    **legacy_kwargs: Any,
 ) -> Tuple[Pipeline, str, str, Optional[List[str]], Optional[Any], Dict]:
     """
     Обучает Pipeline(features → classifier).
+
+    API:
+        ``options`` — инстанс :class:`TrainingOptions` с флагами аугментации,
+        калибровки и CV. Если ``None``, используются дефолты. Для обратной
+        совместимости принимаются плоские kwargs (``use_smote=...``,
+        ``calib_method=...`` и т.п.) — они собираются в ``TrainingOptions``
+        с ``DeprecationWarning``. Удалим в следующем major release.
 
     Функция оркестрирует стадии, каждая из которых вынесена в отдельную
     helper-функцию:
@@ -1271,15 +1349,17 @@ def train_model(
         cm          — confusion matrix (или None если валидация пропущена)
         extras      — доп. данные: {'thresh_90', 'thresh_75', 'report_dict', ...}
     """
+    opts = _resolve_training_options(options, legacy_kwargs)
+
     clf, clf_type = make_classifier(y, C=C, max_iter=max_iter, balanced=balanced,
-                                    calib_method=calib_method)
+                                    calib_method=opts.calib_method)
     pipe = Pipeline([("features", features), ("clf", clf)])
 
     _log_training_start(X, y, clf_type, C, max_iter, balanced, log_cb)
 
     # ── Кросс-валидация ДО обучения (pipe ещё не обучен) ──────────────────
     _cv_results: Dict[str, Any] = {}
-    if run_cv:
+    if opts.run_cv:
         _cv_results = cv_evaluate(X, y, pipe, n_splits=5, log_cb=log_cb,
                                   progress_cb=progress_cb)
 
@@ -1306,17 +1386,17 @@ def train_model(
     Xtr, ytr = _augment_training_data(
         Xtr, ytr,
         random_state=random_state,
-        use_fuzzy_dedup=use_fuzzy_dedup,
-        fuzzy_dedup_threshold=fuzzy_dedup_threshold,
-        use_smote=use_smote,
-        oversample_strategy=oversample_strategy,
-        max_dup_per_sample=max_dup_per_sample,
-        use_hard_negatives=use_hard_negatives,
-        use_field_dropout=use_field_dropout,
-        field_dropout_prob=field_dropout_prob,
-        field_dropout_copies=field_dropout_copies,
-        use_label_smoothing=use_label_smoothing,
-        label_smoothing_eps=label_smoothing_eps,
+        use_fuzzy_dedup=opts.use_fuzzy_dedup,
+        fuzzy_dedup_threshold=opts.fuzzy_dedup_threshold,
+        use_smote=opts.use_smote,
+        oversample_strategy=opts.oversample_strategy,
+        max_dup_per_sample=opts.max_dup_per_sample,
+        use_hard_negatives=opts.use_hard_negatives,
+        use_field_dropout=opts.use_field_dropout,
+        field_dropout_prob=opts.field_dropout_prob,
+        field_dropout_copies=opts.field_dropout_copies,
+        use_label_smoothing=opts.use_label_smoothing,
+        label_smoothing_eps=opts.label_smoothing_eps,
         log_cb=log_cb,
         progress_cb=progress_cb,
     )

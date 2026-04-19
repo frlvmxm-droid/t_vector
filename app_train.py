@@ -57,6 +57,7 @@ from ml_core import (
 from exceptions import FeatureBuildError
 from model_loader import ensure_trusted_model_path, load_model_artifact, get_trusted_model_hash, make_tkinter_confirm_fn
 from app_train_service import TrainingWorkflow
+from ml_training import TrainingOptions
 from app_train_view import build_train_files_card as _build_train_files_card_view
 from workflow_controller import WorkflowProgressController
 from app_train_workflow import validate_train_preconditions, build_validated_train_snapshot
@@ -3418,6 +3419,14 @@ class TrainTabMixin:
             else:
                 _em_feats = make_tfidf()
 
+            _em_options = TrainingOptions(
+                calib_method=snap.get("calib_method", "sigmoid"),
+                use_smote=snap.get("use_smote", True),
+                oversample_strategy=snap.get("oversample_strategy", "augment_light"),
+                max_dup_per_sample=int(snap.get("max_dup_per_sample", 5)),
+                use_label_smoothing=bool(snap.get("use_label_smoothing", False)),
+                label_smoothing_eps=float(snap.get("label_smoothing_eps", 0.05)),
+            )
             _em_pipe, _em_ctype, _em_rep, _em_lbls, _em_cm, _em_ext = workflow.fit_and_evaluate(
                 X, y, _em_feats,
                 C=snap["C"],
@@ -3425,15 +3434,10 @@ class TrainTabMixin:
                 balanced=snap["balanced"],
                 test_size=snap["test_size"],
                 random_state=42,
-                calib_method=snap.get("calib_method", "sigmoid"),
+                options=_em_options,
                 progress_cb=lambda p, s, _b=_pct_base, _l=_lbl:
                     self.after(0, lambda p=p, s=s, b=_b, l=_l:
                         ui_prog(b + p * 0.5, f"[{l}] {s}")),
-                use_smote=snap.get("use_smote", True),
-                oversample_strategy=snap.get("oversample_strategy", "augment_light"),
-                max_dup_per_sample=int(snap.get("max_dup_per_sample", 5)),
-                use_label_smoothing=bool(snap.get("use_label_smoothing", False)),
-                label_smoothing_eps=float(snap.get("label_smoothing_eps", 0.05)),
                 log_cb=_em_slog,
             )
 
@@ -3743,19 +3747,11 @@ class TrainTabMixin:
         # CV включаем только для TF-IDF моделей (SBERT слишком медленный)
         _run_cv = (not use_sbert_val and not use_sbert_hybrid
                    and len(X) >= 100 and len(set(y)) >= 2)
-        pipe, clf_type, report, labels, cm, train_extras = workflow.fit_and_evaluate(
-            X, y, features,
-            C=_effective_C,
-            max_iter=snap["max_iter"],
-            balanced=snap["balanced"],
-            test_size=snap["test_size"],
-            random_state=42,
+        _train_options = TrainingOptions(
             calib_method=snap.get("calib_method", "sigmoid"),
-            progress_cb=lambda p, s: self.after(0, lambda p=p, s=s: ui_prog(p, s)),
             use_smote=snap.get("use_smote", True),
             oversample_strategy=snap.get("oversample_strategy", "augment_light"),
             max_dup_per_sample=int(snap.get("max_dup_per_sample", 5)),
-            log_cb=sbert_log,
             run_cv=_run_cv,
             use_hard_negatives=snap.get("use_hard_negatives", False),
             use_field_dropout=snap.get("use_field_dropout", False),
@@ -3763,6 +3759,17 @@ class TrainTabMixin:
             field_dropout_copies=int(snap.get("field_dropout_copies", 2)),
             use_label_smoothing=bool(snap.get("use_label_smoothing", False)),
             label_smoothing_eps=float(snap.get("label_smoothing_eps", 0.05)),
+        )
+        pipe, clf_type, report, labels, cm, train_extras = workflow.fit_and_evaluate(
+            X, y, features,
+            C=_effective_C,
+            max_iter=snap["max_iter"],
+            balanced=snap["balanced"],
+            test_size=snap["test_size"],
+            random_state=42,
+            options=_train_options,
+            progress_cb=lambda p, s: self.after(0, lambda p=p, s=s: ui_prog(p, s)),
+            log_cb=sbert_log,
         )
 
         if self._cancel_event.is_set():
