@@ -205,6 +205,57 @@ the slice and points to ADR-0002.
   measured coverage from 73.15 % to 74.42 % (margin 1.42 pt, same
   philosophy as the Wave 6.5 bump).
 
+### Wave 7 safety net (UI-driven cluster E2E) — shipped
+Before any stage 2/3 extraction from `app_cluster.run_cluster()`, the
+refactor needs a behavioral baseline that exercises the UI wiring +
+threading hand-off + CLUST_DIR output contract. Pipeline-only smoke
+tests (`test_cluster_pipeline_smoke.py`,
+`test_cluster_supported_combo_runs_full_pipeline`) cover the math but
+not the tk-bound orchestration the refactor is going to rewrite.
+
+* `tests/test_ui_cluster_e2e.py` (new) drives the full method:
+  constructs `App()`, sets `cluster_files` + the minimum tk.Var fields
+  for the `tfidf` + `kmeans` slice, monkey-patches `CLUST_DIR` to
+  `tmp_path`, calls `app.run_cluster()`, pumps the Tk event loop via
+  `app.update()` until `self._processing` flips to `False`, then
+  asserts a `*clustered*.xlsx` file exists in the patched directory.
+* Skip pattern matches `test_ui_smoke.py` (no DISPLAY / no tkinter /
+  no customtkinter → skip). Runs in CI under the existing `ui-smoke`
+  job (`.github/workflows/quality-gates.yml`) which installs
+  `python3-tk` + `customtkinter` and wraps pytest with `xvfb-run -a`.
+* This test pins: output file naming pattern, `_processing` flag
+  lifecycle, and the "output next to CLUST_DIR" contract. A refactor
+  that accidentally breaks any of these fails the gate.
+
+### Wave 7 execution plan (stage 2/3 extraction) — multi-session
+The safety-net test above unblocks the refactor; the extraction itself
+is deliberately broken into small, testable sub-commits so CI catches
+drift at each step:
+
+1. **Port remaining stage 2 combos into `app_cluster_pipeline.py`,
+   one per commit.** The slice already covers `tfidf` + `{kmeans,
+   agglo}`. Next candidates in order of simplicity: `tfidf` + `lda`
+   (sklearn-only), `tfidf` + `hdbscan` (needs `hdbscan` dep in the
+   ml-extras), `sbert` + `kmeans` (pulls `sentence_transformers`),
+   `combo` / `ensemble` (composite paths, hardest — defer to last).
+   Each commit adds one combo + a pipeline smoke test; CI runs the
+   E2E against the existing `tfidf+kmeans` path to guard against
+   regressions in the shared code.
+2. **Extract stage 3 (LLM naming + `kw_dict` + quality metrics) into
+   a pure function.** Stage 3 is ~44 LoC and the LLM-naming helper
+   (`_cluster_step_llm_naming`) is already a discrete method;
+   promoting it to a pipeline function that takes
+   `(labels, X_clean, Xv, snap)` and returns a `PostprocessResult`
+   addendum is mechanical.
+3. **Finally, rewrite `run_cluster()` to delegate to
+   `ClusteringWorkflow.run()`.** Only after (1) and (2) land — the
+   method shrinks from ~950 LoC to ~100 (UI wiring + worker thread +
+   export). The UI-E2E test gate from above validates the shrink
+   did not break externally-visible behavior.
+
+Wave 7.1 (safety net) is Complete. 7.2/7.3 are tractable follow-ups
+now that the gate exists.
+
 ### Wave 7 (full run_cluster decomposition) — still deferred
 Investigation in this wave confirmed Wave 7.2/7.3 (extract stages 2–3
 from `app_cluster.run_cluster()`) cannot ship safely yet:

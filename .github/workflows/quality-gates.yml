@@ -235,4 +235,11 @@ jobs:
         env:
           PYTHONPATH: .
           BRT_LLM_PROVIDER: offline
-        run: xvfb-run -a pytest tests/test_ui_smoke.py -v
+        # test_ui_smoke.py  — `App()` boots with all 4 mixins.
+        # test_ui_cluster_e2e.py — run_cluster() end-to-end on a 10-row CSV
+        #   (safety net for the Wave 7 stage-2/3 extraction; ADR-0007).
+        run: |
+          xvfb-run -a pytest \
+            tests/test_ui_smoke.py \
+            tests/test_ui_cluster_e2e.py \
+            -v
