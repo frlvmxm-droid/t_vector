@@ -150,7 +150,8 @@ def _cache_read(key: str) -> str | None:
     try:
         if p.is_file():
             with p.open("r", encoding="utf-8") as f:
-                return json.load(f).get("label")
+                label = json.load(f).get("label")
+                return str(label) if isinstance(label, str) else None
     except (OSError, ValueError):
         return None
     return None

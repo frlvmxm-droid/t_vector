@@ -26,8 +26,8 @@ Python 3.13 × torch × transformers:
 from __future__ import annotations
 
 import re as _re
-from types import SimpleNamespace
-from typing import Callable, Optional
+from types import SimpleNamespace, TracebackType
+from typing import Any, Callable, List, Literal, Optional, Type, cast
 
 from app_logger import get_logger
 from config.ml_constants import SBERT_IMPORT_MAX_RETRIES
@@ -58,7 +58,7 @@ class SBERTBuiltinsPatch:
     """
 
     def __init__(self) -> None:
-        self._injected: list[str] = []
+        self._injected: List[str] = []
 
     def inject(self, name: str) -> bool:
         """Ищет *name* в torch-пакете и добавляет в ``builtins``.
@@ -82,7 +82,7 @@ class SBERTBuiltinsPatch:
             self._injected.append(name)
             return True
         except ImportError:
-            _sources: list = []
+            _sources: List[Any] = []
             try:
                 import torch as _t
                 _sources.append(_t)
@@ -124,7 +124,12 @@ class SBERTBuiltinsPatch:
     def __enter__(self) -> "SBERTBuiltinsPatch":
         return self
 
-    def __exit__(self, *_exc_info) -> bool:
+    def __exit__(
+        self,
+        _exc_type: Optional[Type[BaseException]],
+        _exc_val: Optional[BaseException],
+        _exc_tb: Optional[TracebackType],
+    ) -> Literal[False]:
         try:
             import builtins as _b
             for _name in self._injected:
@@ -159,25 +164,27 @@ def patch_torch_and_packaging() -> None:
             # transformers требует torch >= 2.4 — "0.0.0" сломает is_torch_available().
             try:
                 import importlib.metadata as _imeta
-                _torch_mod.__version__ = _imeta.version("torch")
+                cast(Any, _torch_mod).__version__ = _imeta.version("torch")
             except (ImportError, Exception):  # noqa: BLE001 — PackageNotFoundError varies
-                _torch_mod.__version__ = "2.4.0"
+                cast(Any, _torch_mod).__version__ = "2.4.0"
         from packaging import version as _pv
         if not getattr(_pv, "_none_patched", False):
             _orig_parse = _pv.parse
 
-            def _safe_parse(v, *_a, **_kw):
+            def _safe_parse(v: Any, *_a: Any, **_kw: Any) -> Any:
                 return _orig_parse("0.0.0" if v is None else v, *_a, **_kw)
 
-            _pv.parse = _safe_parse
+            cast(Any, _pv).parse = _safe_parse
+            # mypy strict не допускает class-from-variable как base, но
+            # подмена Version здесь нужна для transformers-импорта.
             _OrigVer = _pv.Version
 
-            class _SafeVersion(_OrigVer):
-                def __init__(self, version):
+            class _SafeVersion(_OrigVer):  # type: ignore[misc, valid-type]
+                def __init__(self, version: Any) -> None:
                     super().__init__("0.0.0" if version is None else version)
 
-            _pv.Version = _SafeVersion
-            _pv._none_patched = True
+            cast(Any, _pv).Version = _SafeVersion
+            cast(Any, _pv)._none_patched = True
             _log.warning(
                 "[ml_sbert_bootstrap] packaging.version.parse/Version "
                 "пропатчены глобально (torch.__version__ == None). "
@@ -237,10 +244,11 @@ def safe_import_sentence_transformers(
     bp.inject("torch")
     bp.inject("nn")
 
-    _SentenceTransformer = None
+    _ST: Optional[type] = None
     for _attempt in range(max_retries):
         try:
-            from sentence_transformers import SentenceTransformer as _SentenceTransformer
+            from sentence_transformers import SentenceTransformer as _Imported
+            _ST = _Imported
             break
         except ModuleNotFoundError as _mnfe:
             if "sentence_transformers" in str(_mnfe) or "sentence-transformers" in str(_mnfe):
@@ -273,4 +281,5 @@ def safe_import_sentence_transformers(
         )
     if log_cb is not None:
         log_cb("[SBERT] sentence-transformers импортирован.")
-    return _SentenceTransformer
+    assert _ST is not None  # guarantied by the for/else above
+    return _ST

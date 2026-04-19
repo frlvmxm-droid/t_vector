@@ -37,8 +37,7 @@ module = [
     "artifact_contracts",
     "ml_compat",
     "ml_core",
-    # ml_sbert_bootstrap отложен в следующую волну — требует чистки 11 type-issues
-    # (Generic list, attr-defined torch.__version__, _OrigVer как base class, ...).
+    "ml_sbert_bootstrap",
     "ml_distillation",
     "llm_reranker",
     "cluster_workflow_service",
