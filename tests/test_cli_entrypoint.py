@@ -403,6 +403,84 @@ def test_cluster_combo_kmeans_runs_full_pipeline(tmp_path, capsys, monkeypatch):
     assert cluster_ids <= {"0", "1"}
 
 
+def test_cluster_ensemble_kmeans_combo_runs_full_pipeline(tmp_path, capsys, monkeypatch):
+    """Slice extension: ensemble + kmeans. build_vectors fits TF-IDF plus two
+    SBERT models, scores each KMeans partition by silhouette, keeps the
+    winner; run_clustering short-circuits the refit. Two distinct SBERT
+    stubs (keyed by model_name) exercise the multi-candidate selector."""
+    import csv as _csv
+    import numpy as _np
+
+    class _StubSBERT:
+        def __init__(self, *args, **kwargs):
+            # Tk path calls SBERTVectorizer(model_name=..., batch_size=...,
+            # device=...). We key embeddings on model_name so the two
+            # candidates produce different matrices — silhouette has
+            # something real to choose between.
+            self.model_name = kwargs.get("model_name") or (args[0] if args else "")
+
+        def fit_transform(self, texts):
+            # Bucket by topic keyword so the partition recovers topics;
+            # jitter scale differs per model so silhouette scores diverge.
+            jitter = 0.05 if "tiny2" in self.model_name else 0.15
+            rng = _np.random.default_rng(hash(self.model_name) & 0xFFFFFFFF)
+            out = []
+            for t in texts:
+                base = rng.standard_normal(8) * jitter
+                if "перевод" in t.lower():
+                    base += _np.array([1.0, 0, 0, 0, 0, 0, 0, 0])
+                else:
+                    base += _np.array([0, 0, 0, 0, 1.0, 0, 0, 0])
+                out.append(base)
+            return _np.asarray(out, dtype=_np.float32)
+
+    monkeypatch.setattr("ml_vectorizers.SBERTVectorizer", _StubSBERT)
+
+    snap_path = tmp_path / "snap.json"
+    snap_path.write_text(
+        json.dumps({
+            "cluster_vec_mode": "ensemble", "cluster_algo": "kmeans",
+            "sbert_model": "cointegrated/rubert-tiny2",
+            "sbert_model2": "sberbank-ai/sbert_large_nlu_ru",
+            "sbert_batch": 8, "sbert_device": "cpu",
+        }),
+        encoding="utf-8",
+    )
+
+    inp = tmp_path / "in.csv"
+    out = tmp_path / "out.csv"
+    rows = [
+        "перевод денег срочно", "блокировка карты сегодня",
+        "перевод на счёт", "карта заблокирована вчера",
+        "перевести деньги", "разблокировать карту",
+        "отправить перевод", "карта блок",
+        "перевод денег", "карту заблокировали",
+    ]
+    with inp.open("w", encoding="utf-8", newline="") as f:
+        w = _csv.writer(f)
+        w.writerow(["text"])
+        for r in rows:
+            w.writerow([r])
+
+    rc = main([
+        "cluster", "--files", str(inp), "--out", str(out),
+        "--snap", str(snap_path),
+        "--text-col", "text", "--k-clusters", "2",
+    ])
+    assert rc == 0, capsys.readouterr().err
+    parsed = json.loads(capsys.readouterr().out)
+    assert parsed["stage"] == "export_cluster_outputs"
+    # Silhouette-selected winner still yields K=2 partitions on this fixture.
+    assert parsed["k_clusters_found"] == 2
+
+    with out.open() as f:
+        reader = list(_csv.reader(f))
+    assert reader[0] == ["text", "cluster_id", "top_keywords"]
+    assert len(reader) == 1 + len(rows)
+    cluster_ids = {row[1] for row in reader[1:]}
+    assert cluster_ids <= {"0", "1"}
+
+
 def test_cluster_hdbscan_combo_runs_full_pipeline(tmp_path, capsys):
     """Slice extension: tfidf + HDBSCAN (density-based; K is discovered,
     not requested). Noise label -1 is permitted; the XLSX writer still

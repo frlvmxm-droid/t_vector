@@ -159,13 +159,14 @@ def _write_apply_output(
 # Subcommand: cluster
 # ---------------------------------------------------------------------------
 
-_CLUSTER_SUPPORTED_VEC_MODES = ("tfidf", "sbert", "combo")
+_CLUSTER_SUPPORTED_VEC_MODES = ("tfidf", "sbert", "combo", "ensemble")
 _CLUSTER_SUPPORTED_ALGOS = ("kmeans", "agglo", "lda", "hdbscan")
-# sbert/combo pair only with kmeans in the slice; other pairings still
-# route to the prepare-inputs skeleton so users don't accidentally hit
-# half-ported paths (see ADR-0007).
+# sbert/combo/ensemble pair only with kmeans in the slice; other pairings
+# still route to the prepare-inputs skeleton so users don't accidentally
+# hit half-ported paths (see ADR-0007).
 _CLUSTER_SUPPORTED_SBERT_ALGOS = ("kmeans",)
 _CLUSTER_SUPPORTED_COMBO_ALGOS = ("kmeans",)
+_CLUSTER_SUPPORTED_ENSEMBLE_ALGOS = ("kmeans",)
 
 
 def _is_supported_cluster_combo(snap: Dict[str, Any]) -> bool:
@@ -176,6 +177,8 @@ def _is_supported_cluster_combo(snap: Dict[str, Any]) -> bool:
     if vm == "sbert" and algo not in _CLUSTER_SUPPORTED_SBERT_ALGOS:
         return False
     if vm == "combo" and algo not in _CLUSTER_SUPPORTED_COMBO_ALGOS:
+        return False
+    if vm == "ensemble" and algo not in _CLUSTER_SUPPORTED_ENSEMBLE_ALGOS:
         return False
     return True
 

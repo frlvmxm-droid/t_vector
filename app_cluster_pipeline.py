@@ -223,21 +223,23 @@ def prepare_inputs(files_snapshot: List[str], snap: Mapping[str, object]) -> Pre
 _STAGES_NOT_PORTED_MSG = (
     "Pipeline combo {combo!r} is not yet ported. The Wave 3a slice ships "
     "vec_mode='tfidf' + algo in {{'kmeans','agglo','lda','hdbscan'}}, "
-    "vec_mode='sbert' + algo='kmeans', and vec_mode='combo' + algo='kmeans' "
-    "end-to-end; other combinations still live inside "
-    "app_cluster.run_cluster() (ADR-0002 tracks the full migration). Either "
-    "select a supported combo or call the Tk-bound run_cluster() until this "
-    "branch is ported."
+    "vec_mode='sbert'|'combo'|'ensemble' + algo='kmeans' end-to-end; other "
+    "combinations still live inside app_cluster.run_cluster() (ADR-0002 "
+    "tracks the full migration). Either select a supported combo or call "
+    "the Tk-bound run_cluster() until this branch is ported."
 )
 
-_SUPPORTED_VEC_MODES = ("tfidf", "sbert", "combo")
+_SUPPORTED_VEC_MODES = ("tfidf", "sbert", "combo", "ensemble")
 _SUPPORTED_ALGOS = ("kmeans", "agglo", "lda", "hdbscan")
-# sbert and combo currently pair only with kmeans. The Tk path does run
-# hdbscan/agglo on dense SBERT / combo vectors, but porting those would
-# pull in SBERT-specific density heuristics + anchor handling for combo;
-# they are deferred to later sub-commits.
+# sbert, combo and ensemble currently pair only with kmeans. The Tk path
+# does run hdbscan/agglo on dense SBERT / combo vectors, but porting those
+# would pull in SBERT-specific density heuristics + anchor handling; they
+# are deferred to later sub-commits. Ensemble is kmeans-only by design:
+# the silhouette selector fits KMeans to each candidate vectorisation and
+# picks the winner, so supporting a non-kmeans algo there is meaningless.
 _SUPPORTED_SBERT_ALGOS = ("kmeans",)
 _SUPPORTED_COMBO_ALGOS = ("kmeans",)
+_SUPPORTED_ENSEMBLE_ALGOS = ("kmeans",)
 # Agglomerative needs dense input; cap n_rows to keep O(n²) memory bounded.
 _AGGLO_MAX_ROWS = 5_000
 
@@ -254,6 +256,8 @@ def _require_supported_combo(snap: Mapping[str, object]) -> None:
     if vm == "sbert" and algo not in _SUPPORTED_SBERT_ALGOS:
         raise NotImplementedError(_STAGES_NOT_PORTED_MSG.format(combo=_combo(snap)))
     if vm == "combo" and algo not in _SUPPORTED_COMBO_ALGOS:
+        raise NotImplementedError(_STAGES_NOT_PORTED_MSG.format(combo=_combo(snap)))
+    if vm == "ensemble" and algo not in _SUPPORTED_ENSEMBLE_ALGOS:
         raise NotImplementedError(_STAGES_NOT_PORTED_MSG.format(combo=_combo(snap)))
 
 
@@ -432,6 +436,99 @@ def build_vectors(prepared: PreparedInputs, snap: Mapping[str, object]) -> Vecto
         clustering_vectorizer = {
             "svd": svd, "sbert": sbert, "alpha": alpha, "svd_dim": svd_dim,
         }
+    elif vec_mode == "ensemble":
+        # Mirrors app_cluster.py:3761-3871 — fit TF-IDF + two SBERT models,
+        # run KMeans on each, score silhouette, keep the winner. Unlike
+        # combo (which blends all vectorisations into one matrix), ensemble
+        # selects *one* candidate and discards the others. The selector
+        # is folded into build_vectors so run_clustering can stay a thin
+        # dispatch — the winner's labels are stashed in meta and
+        # short-circuited through in stage 3.
+        import numpy as _np
+        from sklearn.cluster import MiniBatchKMeans
+        from sklearn.metrics import silhouette_score as _sil
+        from sklearn.preprocessing import normalize as _sk_normalize
+
+        from ml_vectorizers import SBERTVectorizer
+
+        k_obj = snap.get("k_clusters")
+        if not isinstance(k_obj, (int, float)) or int(k_obj) < 2:
+            raise ValueError(
+                "ensemble build_vectors requires snap['k_clusters'] >= 2"
+            )
+        k_ens = int(k_obj)
+        seed_obj = snap.get("random_state", 42)
+        seed = int(seed_obj) if isinstance(seed_obj, (int, float)) else 42
+
+        def _dense_and_norm(mat: object) -> object:
+            import scipy.sparse as _sp  # type: ignore[import-not-found]
+            arr = mat.toarray() if _sp.issparse(mat) else _np.asarray(mat)  # type: ignore[union-attr]
+            # Tk path normalises only when use_cosine_cluster is set; we
+            # always L2-normalise here so silhouette scores stay comparable
+            # across TF-IDF (raw counts) and SBERT (already unit-norm) —
+            # otherwise the selector biases toward whichever matrix has
+            # larger native scale.
+            return _sk_normalize(arr, norm="l2")
+
+        def _fit_and_score(dense: object, tag: str) -> tuple[object, float]:
+            km = MiniBatchKMeans(
+                n_clusters=k_ens,
+                random_state=seed,
+                batch_size=1024,
+                n_init=10,
+                init="k-means++",
+                max_iter=300,
+            )
+            lbl = km.fit_predict(dense)  # type: ignore[arg-type]
+            try:
+                sample = min(5_000, dense.shape[0])  # type: ignore[attr-defined]
+                sc = float(_sil(dense, lbl, sample_size=sample, random_state=seed))  # type: ignore[arg-type]
+            except Exception:
+                sc = -1.0
+            return (lbl, sc)
+
+        # Candidate 1: TF-IDF (already fit above).
+        tfidf_dense = _dense_and_norm(tfidf_matrix)
+        lbl_tfidf, sc_tfidf = _fit_and_score(tfidf_dense, "tfidf")
+
+        # Candidates 2 & 3: two SBERT models. sbert_model2 defaults to
+        # sbert_model — matches the Tk fallback at app_cluster.py:3831.
+        model1 = str(snap.get("sbert_model", "cointegrated/rubert-tiny2"))
+        model2 = str(snap.get("sbert_model2", model1))
+        batch_obj = snap.get("sbert_batch", 32)
+        batch_size = int(batch_obj) if isinstance(batch_obj, (int, float)) else 32
+        device = str(snap.get("sbert_device", "auto"))
+
+        sbert1 = SBERTVectorizer(
+            model_name=model1, batch_size=batch_size, device=device,
+        )
+        s1_dense = _dense_and_norm(sbert1.fit_transform(texts))
+        lbl_s1, sc_s1 = _fit_and_score(s1_dense, f"sbert:{model1}")
+
+        sbert2 = SBERTVectorizer(
+            model_name=model2, batch_size=batch_size, device=device,
+        )
+        s2_dense = _dense_and_norm(sbert2.fit_transform(texts))
+        lbl_s2, sc_s2 = _fit_and_score(s2_dense, f"sbert:{model2}")
+
+        candidates = [
+            ("tfidf",           tfidf_dense, lbl_tfidf, sc_tfidf, tfidf_vec),
+            (f"sbert:{model1}", s1_dense,    lbl_s1,    sc_s1,    sbert1),
+            (f"sbert:{model2}", s2_dense,    lbl_s2,    sc_s2,    sbert2),
+        ]
+        winner = max(candidates, key=lambda c: c[3])
+        win_name, win_dense, win_labels, win_score, win_vec = winner
+
+        clustering_matrix = win_dense
+        clustering_vectorizer = {
+            "ensemble_winner": win_name,
+            "ensemble_silhouette": win_score,
+            "ensemble_scores": {name: score for name, _, _, score, _ in candidates},
+            "winning_vectorizer": win_vec,
+        }
+        # Stash winner's labels so run_clustering can short-circuit the
+        # kmeans refit (we already picked the best one based on silhouette).
+        _ensemble_labels = win_labels
     elif algo == "lda":
         count_vec = CountVectorizer(
             analyzer="word",
@@ -445,16 +542,22 @@ def build_vectors(prepared: PreparedInputs, snap: Mapping[str, object]) -> Vecto
         clustering_matrix = tfidf_matrix
         clustering_vectorizer = tfidf_vec
 
+    meta: dict[str, object] = {
+        "vectorizer": clustering_vectorizer,
+        "keyword_vectorizer": tfidf_vec,
+        "keyword_matrix": tfidf_matrix,
+        "texts": texts,
+        "min_df": min_df,
+    }
+    if vec_mode == "ensemble":
+        # run_clustering reads meta['ensemble_labels'] and skips the
+        # kmeans refit (the selector above already fit + scored three).
+        meta["ensemble_labels"] = _ensemble_labels
+
     return VectorPack(
         prepared=prepared,
         vectors=clustering_matrix,
-        meta={
-            "vectorizer": clustering_vectorizer,
-            "keyword_vectorizer": tfidf_vec,
-            "keyword_matrix": tfidf_matrix,
-            "texts": texts,
-            "min_df": min_df,
-        },
+        meta=meta,
     )
 
 
@@ -472,7 +575,30 @@ def run_clustering(vectors: VectorPack, snap: Mapping[str, object]) -> ClusterRe
         raise ValueError("run_clustering: VectorPack.vectors is None")
 
     algo = str(snap.get("cluster_algo", ""))
+    vec_mode = str(snap.get("cluster_vec_mode", ""))
     n_rows = vectors.vectors.shape[0]
+
+    # Ensemble short-circuit: build_vectors already fit KMeans on every
+    # candidate vectorisation and picked the winner by silhouette; the
+    # winner's labels live in meta and we hand them straight back.
+    if vec_mode == "ensemble":
+        vmeta = vectors.meta or {}
+        ensemble_labels = vmeta.get("ensemble_labels")
+        if ensemble_labels is None:
+            raise ValueError(
+                "ensemble run_clustering: meta['ensemble_labels'] missing"
+            )
+        return ClusterResult(
+            vectors=vectors,
+            labels=ensemble_labels,
+            meta={
+                "K": int(snap.get("k_clusters", 0) or 0),
+                "algo": algo,
+                "ensemble_winner": vmeta.get("vectorizer", {}).get(
+                    "ensemble_winner"
+                ) if isinstance(vmeta.get("vectorizer"), dict) else None,
+            },
+        )
 
     # HDBSCAN discovers K on its own; all other slice algos need explicit K.
     if algo != "hdbscan":

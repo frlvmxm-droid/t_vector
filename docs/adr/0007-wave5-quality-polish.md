@@ -254,23 +254,29 @@ drift at each step:
    did not break externally-visible behavior.
 
 Wave 7.1 (safety net) is Complete. 7.2 (`tfidf+lda`), 7.3
-(`tfidf+hdbscan`), 7.4 (`sbert+kmeans`) and **7.5a (`combo+kmeans`)
-shipped** — each adds one branch to `build_vectors` / `run_clustering`
-plus a full-pipeline CLI smoke test. `_SUPPORTED_VEC_MODES =
-("tfidf", "sbert", "combo")`, `_SUPPORTED_ALGOS = ("kmeans", "agglo",
-"lda", "hdbscan")`, with the constraint that `sbert` and `combo` each
-pair only with `kmeans` in the slice. Meta on `VectorPack` always
-carries `keyword_matrix` + `keyword_vectorizer` (TF-IDF) so
+(`tfidf+hdbscan`), 7.4 (`sbert+kmeans`), **7.5a (`combo+kmeans`) and
+7.5b (`ensemble+kmeans`) shipped** — each adds one branch to
+`build_vectors` / `run_clustering` plus a full-pipeline CLI smoke
+test. `_SUPPORTED_VEC_MODES = ("tfidf", "sbert", "combo", "ensemble")`,
+`_SUPPORTED_ALGOS = ("kmeans", "agglo", "lda", "hdbscan")`, with the
+constraint that `sbert`, `combo` and `ensemble` each pair only with
+`kmeans` in the slice. Meta on `VectorPack` always carries
+`keyword_matrix` + `keyword_vectorizer` (TF-IDF) so
 `postprocess_clusters` yields TF-IDF-weighted keywords regardless of
 what fed clustering (Count for LDA, dense SBERT embeddings for the
-neural path, the hstacked TF-IDF-SVD + SBERT matrix for combo, TF-IDF
-for everything else). Combo uses `combo_svd_dim` (default 200, clamped
-to `min(n_rows-1, n_features-1)`) and `combo_alpha` (clamped to 0..1)
+neural path, the hstacked TF-IDF-SVD + SBERT matrix for combo, the
+silhouette winner for ensemble, TF-IDF for everything else). Combo
+uses `combo_svd_dim` (default 200, clamped to
+`min(n_rows-1, n_features-1)`) and `combo_alpha` (clamped to 0..1)
 from snap; the Tk UI slider does the same clamp at widget level.
-Wave 7.5b (`ensemble` vec_mode — multi-round voting) is the remaining
-stage 2 work before step (2) can start; deferred because porting it
-pulls in the K-fold consensus logic + stage-3-like cluster-merging
-that isn't covered by the current pipeline contract.
+Ensemble fits MiniBatchKMeans on TF-IDF + 2×SBERT candidates
+(`sbert_model` + `sbert_model2`, the second defaulting to the first)
+with L2-normalised matrices, scores each partition via
+`silhouette_score` (sample_size=5 000), keeps the winner and
+short-circuits `run_clustering` via `meta['ensemble_labels']` — the
+selector lives inside `build_vectors` so stage-3 stays a thin dispatch.
+All stage-2 combos are now ported; step (2) (stage-3 extraction) is
+the remaining gate before the `run_cluster()` delegate rewrite.
 
 ### Wave 7 (full run_cluster decomposition) — still deferred
 Investigation in this wave confirmed Wave 7.2/7.3 (extract stages 2–3
