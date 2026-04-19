@@ -108,7 +108,25 @@ class MyVectorizer(BaseEstimator, TransformerMixin):
         ...
 ```
 
-Then add it to the `FeatureUnion` in `make_hybrid_vectorizer()` (line ~1800).
+Then add it to the `FeatureUnion` in `make_hybrid_vectorizer()` (`ml_vectorizers.py:1863`).
+
+### Adding a New ML Config Flag
+
+When adding a new training-time flag (e.g. a new augmentation, calibration, or
+deduplication knob), follow this three-step propagation:
+
+1. **`ml_training.py`** — add the field to the `TrainingOptions` dataclass with
+   a sensible default and add it to the `TRAINING_OPTION_KEYS` set used by the
+   legacy-kwargs migration shim.
+2. **`config/ml_constants.py`** — pull the default into a named constant if it
+   should be tunable in one place (e.g. `DEFAULT_FUZZY_DEDUP_THRESHOLD = 92`).
+3. **`app_train.py`** — propagate via `snap.get(...)` in **both** call-sites:
+   the main one (≈line 3754) and the ensemble/K-fold one (≈line 3422). Both
+   must stay symmetric — see Wave 5 Commit 1 for the rationale.
+
+If the flag enters the workflow contract layer (snapshot validation), also add
+a corresponding `_Field(...)` constraint to `_TrainSchema` in
+`workflow_contracts.py` and mirror it in `_manual_validate_payload`.
 
 ---
 

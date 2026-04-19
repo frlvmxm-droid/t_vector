@@ -37,6 +37,9 @@ module = [
     "artifact_contracts",
     "ml_compat",
     "ml_core",
+    # ml_sbert_bootstrap отложен в следующую волну — требует чистки 11 type-issues
+    # (Generic list, attr-defined torch.__version__, _OrigVer как base class, ...).
+    "ml_distillation",
     "llm_reranker",
     "cluster_workflow_service",
     "app_train_service",
@@ -76,9 +79,9 @@ filterwarnings = [
     # оставаться ни одного DeprecationWarning из ml_training в тестах.
     "error::DeprecationWarning:ml_training",
 ]
+# `slow` зарезервирован под долгие тесты (см. CONTRIBUTING.md);
+# unit/integration удалены — в коде ни одного применения.
 markers = [
-    "unit: fast unit tests",
-    "integration: integration tests with multiple modules",
     "slow: long-running tests",
 ]
 

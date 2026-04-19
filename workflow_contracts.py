@@ -7,15 +7,18 @@ from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from pydantic import BaseModel as _PydanticBaseModel
+    from pydantic import Field as _Field
 
     ValidationError: type[Exception] = Exception
     _BaseModel: type[_PydanticBaseModel] | None = None
 else:
     try:
         from pydantic import BaseModel as _BaseModel
+        from pydantic import Field as _Field
         from pydantic import ValidationError
     except (ImportError, ModuleNotFoundError):  # optional dependency
         _BaseModel = None
+        _Field = None  # type: ignore[assignment]
         ValidationError = Exception
 
 
@@ -68,16 +71,40 @@ def _manual_validate_payload(schema_name: str, payload: dict[str, Any]) -> dict[
     out = dict(payload)
     if schema_name == "train":
         out["train_mode"] = _as_str(out, "train_mode")
-        out["C"] = _as_float(out, "C", min_value=0.0)
+        # `gt=0`, не `>= 0` — соответствует pydantic _TrainSchema.
+        c_val = _as_float(out, "C", min_value=0.0, max_value=None)
+        if c_val <= 0.0:
+            raise ValueError("Параметр C должен быть > 0.")
+        out["C"] = c_val
         out["max_iter"] = _as_int(out, "max_iter", min_value=1)
         out["test_size"] = _as_float(out, "test_size", min_value=0.0, max_value=0.95)
+        if out["test_size"] <= 0.0:
+            raise ValueError("Параметр test_size должен быть > 0.")
         out.setdefault("use_smote", True)
         out.setdefault("oversample_strategy", "augment_light")
         out.setdefault("diagnostic_mode", False)
+        # Опциональная валидация TrainingOptions-зеркальных полей.
+        # Толерантна к отсутствию ключей — старые snap-файлы не падают.
+        if "field_dropout_prob" in out:
+            out["field_dropout_prob"] = _as_float(
+                out, "field_dropout_prob", min_value=0.0, max_value=1.0,
+            )
+        if "label_smoothing_eps" in out:
+            out["label_smoothing_eps"] = _as_float(
+                out, "label_smoothing_eps", min_value=0.0, max_value=0.5,
+            )
+        if "fuzzy_dedup_threshold" in out:
+            out["fuzzy_dedup_threshold"] = _as_int(
+                out, "fuzzy_dedup_threshold", min_value=0, max_value=100,
+            )
+        if "field_dropout_copies" in out:
+            out["field_dropout_copies"] = _as_int(
+                out, "field_dropout_copies", min_value=1, max_value=10,
+            )
     elif schema_name == "apply":
-        out["model_file"] = _as_str(out, "model_file")
-        out["apply_file"] = _as_str(out, "apply_file")
-        out["pred_col"] = _as_str(out, "pred_col")
+        out["model_file"] = _as_str(out, "model_file", min_len=1)
+        out["apply_file"] = _as_str(out, "apply_file", min_len=1)
+        out["pred_col"] = _as_str(out, "pred_col", min_len=1)
         out.setdefault("use_ensemble", False)
         out.setdefault("diagnostic_mode", False)
     elif schema_name == "cluster":
@@ -120,35 +147,43 @@ _ClusterSchema: Any
 
 if _BaseModel is not None:
     class _TrainSchema(_BaseModel):  # type: ignore[no-redef,misc,valid-type]
-        train_mode: str
-        C: float
-        max_iter: int
-        test_size: float
+        # `allow_inf_nan=False` отвергает inf/-inf/NaN на уровне pydantic
+        # (без ручной post-проверки). Границы зеркалят _manual_validate_payload.
+        train_mode: str = _Field(..., min_length=1)
+        C: float = _Field(..., gt=0.0, allow_inf_nan=False)
+        max_iter: int = _Field(..., ge=1)
+        test_size: float = _Field(..., gt=0.0, le=0.95, allow_inf_nan=False)
         # Опциональные поля с defaults, совпадающими с from_snapshot()
         use_smote: bool = True
         oversample_strategy: str = "augment_light"
         diagnostic_mode: bool = False
+        # TrainingOptions-зеркальные поля для опционального снапшотного контроля.
+        # Все Optional — старые snap-файлы без них не упадут.
+        field_dropout_prob: float | None = _Field(None, ge=0.0, le=1.0)
+        label_smoothing_eps: float | None = _Field(None, ge=0.0, le=0.5)
+        fuzzy_dedup_threshold: int | None = _Field(None, ge=0, le=100)
+        field_dropout_copies: int | None = _Field(None, ge=1, le=10)
 
     class _ApplySchema(_BaseModel):  # type: ignore[no-redef,misc,valid-type]
-        model_file: str
-        apply_file: str
-        pred_col: str
+        model_file: str = _Field(..., min_length=1)
+        apply_file: str = _Field(..., min_length=1)
+        pred_col: str = _Field(..., min_length=1)
         use_ensemble: bool = False
         diagnostic_mode: bool = False
 
     class _ClusterSchema(_BaseModel):  # type: ignore[no-redef,misc,valid-type]
-        cluster_algo: str
-        cluster_vec_mode: str
-        k_clusters: int
-        n_init_cluster: int
-        cluster_min_df: int
+        cluster_algo: str = _Field(..., min_length=1)
+        cluster_vec_mode: str = _Field(..., min_length=1)
+        k_clusters: int = _Field(..., ge=2, le=500)
+        n_init_cluster: int = _Field(..., ge=1, le=1000)
+        cluster_min_df: int = _Field(..., ge=0, le=1000)
         use_umap: bool
         use_llm_naming: bool = False
         use_t5_summary: bool = False
         diagnostic_mode: bool = False
         merge_similar_clusters: bool = False
-        merge_threshold: float = 0.85
-        n_repr_examples: int = 5
+        merge_threshold: float = _Field(0.85, ge=0.0, le=1.0, allow_inf_nan=False)
+        n_repr_examples: int = _Field(5, ge=1, le=100)
 else:
     _TrainSchema = _ApplySchema = _ClusterSchema = None
 
