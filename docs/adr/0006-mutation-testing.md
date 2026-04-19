@@ -1,7 +1,24 @@
 # ADR-0006: Mutation testing as the coverage-honesty gate
 
 ## Status
-Proposed (target: Wave 5).
+Accepted; nightly harness shipped in Wave 8.1.
+
+## Implementation status (Wave 8.1)
+- Per-module wrapper: `ci/mutation_smoke.py` (~170 LoC). Runs
+  `mutmut run` against one source file with a focused subset of the
+  test suite, then computes kill ratio and gates on `--threshold`.
+  Cache dir is per-module so concurrent CI shards don't collide.
+- Nightly workflow: `.github/workflows/mutation-score.yml` with a
+  3-shard matrix (`ml_distillation.py` ≥ 75 %, `workflow_contracts.py`
+  ≥ 70 %, `ml_core.py` ≥ 65 %). Each shard uploads a JSON summary
+  artefact for trend tracking. Warn-only per §4 below — failure
+  prints `::warning::` but does not break the workflow.
+- pyproject `[tool.mutmut]` keeps `paths_to_mutate` explicit so an
+  accidental `mutmut run` from the repo root cannot wander into the
+  4 000-LoC UI mixins (which would never finish in 90 minutes).
+- The original `app_cluster_pipeline.py` / `cluster_run_stages.py`
+  candidates from §2 are deferred until the Wave 3a port lands —
+  mutating `NotImplementedError` stubs has no signal value.
 
 ## Context
 Current coverage gate is `--cov-fail-under=45` (actual ~49 %). Line

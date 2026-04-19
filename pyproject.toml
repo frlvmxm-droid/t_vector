@@ -86,3 +86,21 @@ markers = [
 
 [tool.pip-compile]
 output-file = "requirements.lock"
+
+# ---------------------------------------------------------------------------
+# Mutmut — mutation testing (ADR-0006, Wave 8.1)
+# ---------------------------------------------------------------------------
+# Scoped to high-value pure-logic modules where line coverage is a weak signal:
+# numeric helpers (ml_distillation), data-shape contracts (workflow_contracts),
+# small infra (ml_core constants & shims). Run via `tools/mutation_smoke.py`
+# (per-module wrapper) or the nightly `mutation-score.yml` workflow. The
+# package-level `mutmut run` is kept narrow because the full ml_* suite
+# exceeds 6 hours on standard CI runners — see ADR-0006 §3.
+[tool.mutmut]
+paths_to_mutate = "ml_distillation.py,workflow_contracts.py,ml_core.py"
+tests_dir = "tests/"
+runner = "python -m pytest -x -q --tb=no"
+backup = false
+# Mutants that match these patterns are skipped — they are equivalent
+# (semantics-preserving) by construction.
+also_copy = "tests/conftest.py"
