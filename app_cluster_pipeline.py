@@ -222,14 +222,15 @@ def prepare_inputs(files_snapshot: List[str], snap: Mapping[str, object]) -> Pre
 
 _STAGES_NOT_PORTED_MSG = (
     "Pipeline combo {combo!r} is not yet ported. Wave 3a slice ships "
-    "vec_mode='tfidf' + algo in {{'kmeans', 'agglo', 'lda'}} end-to-end; other "
-    "combinations still live inside app_cluster.run_cluster() (ADR-0002 tracks "
-    "the full migration). Either select a supported combo or call the Tk-bound "
-    "run_cluster() until this branch is ported."
+    "vec_mode='tfidf' + algo in {{'kmeans', 'agglo', 'lda', 'hdbscan'}} "
+    "end-to-end; other combinations still live inside "
+    "app_cluster.run_cluster() (ADR-0002 tracks the full migration). Either "
+    "select a supported combo or call the Tk-bound run_cluster() until this "
+    "branch is ported."
 )
 
 _SUPPORTED_VEC_MODE = "tfidf"
-_SUPPORTED_ALGOS = ("kmeans", "agglo", "lda")
+_SUPPORTED_ALGOS = ("kmeans", "agglo", "lda", "hdbscan")
 # Agglomerative needs dense input; cap n_rows to keep O(n²) memory bounded.
 _AGGLO_MAX_ROWS = 5_000
 
@@ -392,20 +393,24 @@ def run_clustering(vectors: VectorPack, snap: Mapping[str, object]) -> ClusterRe
     if vectors.vectors is None:
         raise ValueError("run_clustering: VectorPack.vectors is None")
 
-    k_obj = snap.get("k_clusters")
-    if not isinstance(k_obj, (int, float)) or int(k_obj) < 2:
-        raise ValueError(
-            "run_clustering requires snap['k_clusters'] >= 2"
-        )
-    k = int(k_obj)
-
-    n_rows = vectors.vectors.shape[0]
-    if k > n_rows:
-        raise ValueError(
-            f"k_clusters={k} exceeds row count {n_rows}; pick a smaller K"
-        )
-
     algo = str(snap.get("cluster_algo", ""))
+    n_rows = vectors.vectors.shape[0]
+
+    # HDBSCAN discovers K on its own; all other slice algos need explicit K.
+    if algo != "hdbscan":
+        k_obj = snap.get("k_clusters")
+        if not isinstance(k_obj, (int, float)) or int(k_obj) < 2:
+            raise ValueError(
+                "run_clustering requires snap['k_clusters'] >= 2"
+            )
+        k = int(k_obj)
+        if k > n_rows:
+            raise ValueError(
+                f"k_clusters={k} exceeds row count {n_rows}; pick a smaller K"
+            )
+    else:
+        k = 0  # discovered post-fit; kept in meta for downstream logging
+
     seed_obj = snap.get("random_state", 42)
     seed = int(seed_obj) if isinstance(seed_obj, (int, float)) else 42
     if algo == "kmeans":
@@ -449,6 +454,51 @@ def run_clustering(vectors: VectorPack, snap: Mapping[str, object]) -> ClusterRe
         )
         doc_topics = model.fit_transform(vectors.vectors)  # type: ignore[attr-defined]
         labels = _np.argmax(doc_topics, axis=1)
+    elif algo == "hdbscan":
+        import numpy as _np
+
+        # Prefer sklearn's in-tree HDBSCAN (≥1.3); fall back to the standalone
+        # hdbscan package — mirrors the Tk path (app_cluster.py:4031-4035).
+        try:
+            from sklearn.cluster import HDBSCAN as _HDBSCAN_cls
+        except ImportError:
+            import hdbscan as _hdbscan_mod
+
+            _HDBSCAN_cls = _hdbscan_mod.HDBSCAN
+
+        # Densify: HDBSCAN on the standalone package does not support sparse.
+        dense = vectors.vectors.toarray()  # type: ignore[union-attr]
+
+        min_cs_obj = snap.get("hdbscan_min_cluster_size", 0)
+        try:
+            min_cs = int(min_cs_obj) if min_cs_obj is not None else 0
+        except (TypeError, ValueError):
+            min_cs = 0
+        if min_cs <= 0:
+            # Sentinel: 0 or negative → sqrt(N) heuristic (matches Tk path).
+            min_cs = max(5, int(n_rows ** 0.5))
+
+        hdb_kwargs: dict[str, object] = {"min_cluster_size": min_cs}
+        min_samples_obj = snap.get("hdbscan_min_samples", 0)
+        try:
+            min_samples = int(min_samples_obj) if min_samples_obj is not None else 0
+        except (TypeError, ValueError):
+            min_samples = 0
+        if min_samples > 0:
+            hdb_kwargs["min_samples"] = min_samples
+        eps_obj = snap.get("hdbscan_eps", 0.0)
+        try:
+            eps = float(eps_obj) if eps_obj is not None else 0.0
+        except (TypeError, ValueError):
+            eps = 0.0
+        if eps > 0.0:
+            hdb_kwargs["cluster_selection_epsilon"] = eps
+
+        model = _HDBSCAN_cls(**hdb_kwargs)
+        labels = model.fit_predict(dense)  # type: ignore[attr-defined]
+        labels_arr = _np.asarray(labels)
+        valid = labels_arr[labels_arr >= 0]
+        k = int(valid.max()) + 1 if valid.size else 0
     else:
         # Unreachable: _require_supported_combo gates on the same set.
         raise NotImplementedError(f"run_clustering: algo={algo!r} not in slice")

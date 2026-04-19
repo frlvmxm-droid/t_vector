@@ -254,6 +254,60 @@ def test_cluster_agglo_combo_runs_full_pipeline(tmp_path, capsys):
     assert cluster_ids <= {"0", "1"}
 
 
+def test_cluster_hdbscan_combo_runs_full_pipeline(tmp_path, capsys):
+    """Slice extension: tfidf + HDBSCAN (density-based; K is discovered,
+    not requested). Noise label -1 is permitted; the XLSX writer still
+    serialises it as a valid cluster_id string."""
+    import csv as _csv
+
+    snap_path = tmp_path / "snap.json"
+    snap_path.write_text(
+        json.dumps({
+            "cluster_vec_mode": "tfidf", "cluster_algo": "hdbscan",
+            # Small min_cluster_size so the 12-row fixture actually forms
+            # clusters rather than being labelled all-noise.
+            "hdbscan_min_cluster_size": 3,
+        }),
+        encoding="utf-8",
+    )
+
+    inp = tmp_path / "in.csv"
+    out = tmp_path / "out.csv"
+    rows = [
+        "перевод денег срочно", "перевод денег быстро", "перевод денег сейчас",
+        "блокировка карты сегодня", "блокировка карты утром", "блокировка карты вчера",
+        "перевод на счёт", "перевод на карту", "перевод на дебет",
+        "карта заблокирована", "карту заблокировали", "карта блок",
+    ]
+    with inp.open("w", encoding="utf-8", newline="") as f:
+        w = _csv.writer(f)
+        w.writerow(["text"])
+        for r in rows:
+            w.writerow([r])
+
+    rc = main([
+        "cluster", "--files", str(inp), "--out", str(out),
+        "--snap", str(snap_path),
+        # --k-clusters is ignored by HDBSCAN but the CLI still demands it.
+        "--text-col", "text", "--k-clusters", "2",
+    ])
+    assert rc == 0, capsys.readouterr().err
+    parsed = json.loads(capsys.readouterr().out)
+    assert parsed["stage"] == "export_cluster_outputs"
+    # HDBSCAN discovers K; accept any non-negative value (including 0 if
+    # the whole dataset is flagged noise for a pathological fixture —
+    # the test fixture is structured so this should not happen, but we
+    # assert on the schema contract rather than the K value).
+    assert isinstance(parsed["k_clusters_found"], int)
+    assert parsed["k_clusters_found"] >= 0
+    assert parsed["n_noise"] >= 0
+
+    with out.open() as f:
+        reader = list(_csv.reader(f))
+    assert reader[0] == ["text", "cluster_id", "top_keywords"]
+    assert len(reader) == 1 + len(rows)
+
+
 # ---------------------------------------------------------------------------
 # train (Wave 8.3 — real implementation, no more --allow-skeleton)
 # ---------------------------------------------------------------------------

@@ -160,7 +160,7 @@ def _write_apply_output(
 # ---------------------------------------------------------------------------
 
 _CLUSTER_SUPPORTED_VEC_MODE = "tfidf"
-_CLUSTER_SUPPORTED_ALGOS = ("kmeans", "agglo", "lda")
+_CLUSTER_SUPPORTED_ALGOS = ("kmeans", "agglo", "lda", "hdbscan")
 
 
 def cmd_cluster(args: argparse.Namespace) -> int:
