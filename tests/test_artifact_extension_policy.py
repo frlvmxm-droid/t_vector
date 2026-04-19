@@ -18,8 +18,18 @@ def test_apply_callsite_restricts_extensions_to_joblib(monkeypatch):
 
     monkeypatch.setattr("app_apply.load_model_artifact", _fake_loader)
 
+    class _StubTrustStore:
+        def get_hash(self, _path):
+            return None
+
+        def trusted_canonical_paths(self):
+            return ()
+
     class _Dummy(ApplyTabMixin):
         _SUPPORTED_SCHEMA_VERSION = 1
+
+        def __init__(self):
+            self._trust_store = _StubTrustStore()
 
     d = _Dummy()
     out = d._load_model_pkg("x.joblib")

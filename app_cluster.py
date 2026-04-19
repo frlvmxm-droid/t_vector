@@ -35,9 +35,58 @@ from config.ml_constants import KMEANS_BATCH_SIZE, HDBSCAN_NOISE_BATCH_SIZE
 from cluster_algo_strategy import (
     cuda_available as _cuda_available,
     cuml_kmeans_available as _cuml_kmeans_available,
-    gpu_kmeans as _gpu_kmeans,
+    gpu_kmeans as _strategy_gpu_kmeans,
     gpu_umap as _gpu_umap,
 )
+
+# Test-patchable overrides for GPU/CPU branch selection. Default None means
+# "defer to cluster_algo_strategy's own detection". Contract-tests monkeypatch
+# these directly on the `app_cluster` module.
+_CUML_KMEANS: Optional[bool] = None
+_cuml_cluster = None
+
+
+def _gpu_kmeans(
+    n_clusters: int,
+    random_state: int = 42,
+    batch_size: int = KMEANS_BATCH_SIZE,
+    n_init: int = 10,
+    init: str = "k-means++",
+    **mb_kwargs,
+):
+    """Thin wrapper around ``cluster_algo_strategy.gpu_kmeans``.
+
+    Respects module-level overrides (`_CUML_KMEANS`, `_cuml_cluster`) so
+    contract-tests can pin the branch without touching the strategy module.
+    """
+    max_iter = int(mb_kwargs.pop("max_iter", 300))
+    if _CUML_KMEANS is True and _cuml_cluster is not None:
+        return _cuml_cluster.KMeans(
+            n_clusters=n_clusters,
+            random_state=random_state,
+            init=init if init != "k-means++" else "scalable-k-means++",
+            n_init=n_init,
+            max_iter=max_iter,
+        )
+    if _CUML_KMEANS is False:
+        return MiniBatchKMeans(
+            n_clusters=n_clusters,
+            random_state=random_state,
+            batch_size=batch_size,
+            n_init=n_init,
+            init=init,
+            max_iter=max_iter,
+            **mb_kwargs,
+        )
+    return _strategy_gpu_kmeans(
+        n_clusters=n_clusters,
+        random_state=random_state,
+        batch_size=batch_size,
+        n_init=n_init,
+        init=init,
+        max_iter=max_iter,
+        **mb_kwargs,
+    )
 from cluster_runtime_service import (
     cleanup_cluster_runtime,
     try_mark_processing,
@@ -78,6 +127,8 @@ from app_cluster_service import (
 )
 from cluster_ui_builder import build_cluster_primary_sections
 from cluster_run_coordinator import prepare_cluster_run_context
+from app_cluster_workflow import validate_cluster_preconditions
+from cluster_state_adapter import build_cluster_runtime_snapshot
 from app_cluster_pipeline import (
     build_t5_source_text,
     prepare_inputs,
@@ -2011,7 +2062,15 @@ class ClusterTabMixin:
         self.log_cluster(f"Экспорт: {copied} файл(ов) → {dst_dir}")
 
     def _prepare_cluster_run_context(self):
-        """Готовит snapshot и preconditions для run_cluster."""
+        """Готовит snapshot и preconditions для run_cluster.
+
+        Preflight резолвится через модульный атрибут `validate_cluster_preconditions`,
+        что позволяет тестам монки-патчить его на уровне `app_cluster`.
+        """
+        if not validate_cluster_preconditions(self):
+            with self._proc_lock:
+                self._processing = False
+            return None, None
         return prepare_cluster_run_context(self)
 
     def _cluster_step_llm_naming(self, snap: dict, labels: list, X_clean: list, Xv, cluster_name_map: dict) -> None:
@@ -3302,7 +3361,6 @@ class ClusterTabMixin:
 
 
     def run_cluster(self):
-        self._right_tabs.select(self._log_tab_indices["cluster"])
         with self._proc_lock:
             if self._processing:
                 return
@@ -3310,6 +3368,9 @@ class ClusterTabMixin:
         snap, files_snapshot = self._prepare_cluster_run_context()
         if snap is None:
             return
+
+        # Preflight passed — safe to touch UI.
+        self._right_tabs.select(self._log_tab_indices["cluster"])
         tune_cluster_runtime_for_input(
             files_snapshot=files_snapshot,
             snap=snap,

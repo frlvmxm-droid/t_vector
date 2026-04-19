@@ -1,3 +1,6 @@
+import importlib.util
+from unittest.mock import MagicMock
+
 import tkinter as tk
 
 import pytest
@@ -6,6 +9,8 @@ from ui_widgets import ScrollableFrame
 
 
 def test_scrollable_frame_create_destroy_recreate():
+    if importlib.util.find_spec("tkinter") is None or isinstance(tk, MagicMock):
+        pytest.skip("tkinter not installed — ScrollableFrame lifecycle cannot be exercised")
     try:
         root = tk.Tk()
     except tk.TclError:
