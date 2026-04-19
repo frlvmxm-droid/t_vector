@@ -163,11 +163,12 @@ jobs:
           PYTHONPATH: .
           BRT_LLM_PROVIDER: offline   # ADR-0004: deterministic LLM in CI
         run: |
-          # Ratchet: 45 → 50 (branch). Wave 5 target 70 %. `.coveragerc`
-          # omits UI/view layers exercised only through Tk.
+          # Ratchet: 45 → 50 → 65 (Wave 6 Block 3). UI/view layers и
+          # deprecated re-export шимы вынесены в `.coveragerc` omit;
+          # текущее достижимое покрытие на тестируемом ядре ≈69 %.
           pytest --cov-config=.coveragerc \
             --cov-report=xml --cov-report=term \
-            --cov-branch --cov-fail-under=50 \
+            --cov-branch --cov-fail-under=65 \
             --ignore=tests/test_heavy_modules.py \
             -q
 

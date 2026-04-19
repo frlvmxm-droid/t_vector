@@ -19,6 +19,24 @@ omit =
     ui_theme_ctk.py
     app_dialogs_ctk.py
     experiment_history_dialog.py
+    # UI mixins — purely Tk-bound; covered by tests/test_ui_smoke.py
+    # under Xvfb. Testable orchestration logic lives in *_service.py.
+    app.py
+    app_train.py
+    app_apply.py
+    app_cluster.py
+    app_apply_view.py
+    app_train_view.py
+    cluster_ui_builder.py
+    # Deprecated re-export shims (warn on import, code lives elsewhere)
+    core/feature_builder.py
+    core/hw_profile.py
+    core/text_utils.py
+    utils/__init__.py
+    utils/excel_utils.py
+    utils/t5_summarizer.py
+    # Legacy entrypoint kept for back-compat
+    bank_reason_trainer/__main__.py
 
 [report]
 exclude_also =
@@ -29,7 +47,7 @@ exclude_also =
     if __name__ == .__main__.:
     raise NotImplementedError
     \.\.\.$
-fail_under = 50
+fail_under = 65
 precision = 2
 show_missing = True
 skip_covered = True
