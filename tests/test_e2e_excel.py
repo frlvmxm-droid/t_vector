@@ -43,7 +43,7 @@ _LABELS_BRIEF = [
 def mini_model(tmp_path_factory):
     """Train a tiny model and return the pipeline object."""
     from ml_vectorizers import make_hybrid_vectorizer
-    from ml_training import train_model
+    from ml_training import TrainingOptions, train_model
 
     # More training data for 3-class model (need at least 2 samples/class in test split)
     X = _TEXTS_BRIEF * 6   # 30 samples
@@ -57,8 +57,8 @@ def mini_model(tmp_path_factory):
     pipe, *_ = train_model(
         X=X, y=y, features=features,
         C=1.0, max_iter=300, balanced=True,
-        calib_method="sigmoid", test_size=0.2,
-        random_state=42, use_smote=False,
+        test_size=0.2, random_state=42,
+        options=TrainingOptions(calib_method="sigmoid", use_smote=False),
     )
     return pipe
 

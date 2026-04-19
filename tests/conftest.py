@@ -126,6 +126,31 @@ def structured_texts() -> List[str]:
     return STRUCTURED_TEXTS
 
 
+# ---------------------------------------------------------------------------
+# Tiny synthetic datasets — для быстрых ml_training-тестов (без UI/IO)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="session")
+def tiny_balanced_dataset():
+    """30 примеров, 2 класса по 15. Достаточно для train_model + holdout."""
+    texts = [f"text example number {i} about topic" for i in range(30)]
+    labels = [("a" if i % 2 == 0 else "b") for i in range(30)]
+    return texts, labels
+
+
+@pytest.fixture(scope="session")
+def tagged_balanced_dataset():
+    """То же, но с [DESC]/[CLIENT]/[OPERATOR] секциями для field_dropout."""
+    sample = (
+        "[DESC]\nописание транзакции\n"
+        "[CLIENT]\nклиент говорит\n"
+        "[OPERATOR]\nоператор отвечает"
+    )
+    texts = [sample] * 30
+    labels = [("a" if i % 2 == 0 else "b") for i in range(30)]
+    return texts, labels
+
+
 @pytest.fixture(scope="session")
 def minimal_bundle(tmp_path_factory):
     """Minimal sklearn TF-IDF + LinearSVC bundle for apply/predict tests."""

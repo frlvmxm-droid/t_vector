@@ -132,3 +132,71 @@ class TestTrainModelShim:
                 test_size=0.2, random_state=42,
             )
         assert pipe is not None
+
+    def test_all_fields_flow_to_train_model(self, monkeypatch):
+        """Каждое поле TrainingOptions должно дойти до _augment_training_data.
+
+        monkeypatched internal helper — bump if rename.
+        """
+        import ml_training as mt
+
+        captured: dict = {}
+
+        def _spy_augment(X, y, *, random_state, **kwargs):
+            captured.update(kwargs)
+            captured["random_state"] = random_state
+            return list(X), list(y)
+
+        monkeypatch.setattr(mt, "_augment_training_data", _spy_augment)
+
+        opts = TrainingOptions(
+            calib_method="isotonic",
+            use_smote=True,
+            oversample_strategy="augment_light",
+            max_dup_per_sample=7,
+            use_hard_negatives=True,
+            use_field_dropout=True,
+            field_dropout_prob=0.25,
+            field_dropout_copies=3,
+            use_label_smoothing=True,
+            label_smoothing_eps=0.08,
+            use_fuzzy_dedup=True,
+            fuzzy_dedup_threshold=88,
+        )
+
+        X, y = _tiny_dataset()
+        train_model(
+            X, y, _simple_vectorizer(),
+            C=1.0, max_iter=200, balanced=True,
+            test_size=0.2, random_state=42,
+            options=opts,
+        )
+
+        assert captured["use_smote"] is True
+        assert captured["oversample_strategy"] == "augment_light"
+        assert captured["max_dup_per_sample"] == 7
+        assert captured["use_hard_negatives"] is True
+        assert captured["use_field_dropout"] is True
+        assert captured["field_dropout_prob"] == pytest.approx(0.25)
+        assert captured["field_dropout_copies"] == 3
+        assert captured["use_label_smoothing"] is True
+        assert captured["label_smoothing_eps"] == pytest.approx(0.08)
+        assert captured["use_fuzzy_dedup"] is True
+        assert captured["fuzzy_dedup_threshold"] == 88
+
+    def test_deprecation_stacklevel_points_to_caller(self):
+        """stacklevel должен показывать на тестовый файл, не на ml_training.py."""
+        X, y = _tiny_dataset()
+        with warnings.catch_warnings(record=True) as record:
+            warnings.simplefilter("always")
+            train_model(
+                X, y, _simple_vectorizer(),
+                C=1.0, max_iter=200, balanced=True,
+                test_size=0.2, random_state=42,
+                use_smote=False,
+            )
+        deprec = [w for w in record if issubclass(w.category, DeprecationWarning)]
+        assert deprec, "ожидался хотя бы один DeprecationWarning"
+        assert deprec[0].filename.endswith("test_training_options.py"), (
+            f"stacklevel указывает не на caller: {deprec[0].filename}"
+        )

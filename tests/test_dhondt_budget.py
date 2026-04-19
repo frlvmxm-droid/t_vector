@@ -75,3 +75,25 @@ class TestDhondtAllocate:
         weights = {"A": 0, "B": 0}
         alloc = _dhondt_allocate(100, weights, floor=10)
         assert alloc == {"A": 0, "B": 0}
+
+    def test_floor_zero_pure_proportional(self):
+        # floor=0 → строго пропорциональное распределение (д’Ондт без минимумов).
+        weights = {"A": 6, "B": 3, "C": 1}
+        budget = 1000
+        alloc = _dhondt_allocate(budget, weights, floor=0)
+        assert sum(alloc.values()) == budget
+        # Пропорция приблизительная (д’Ондт целочисленный): A ≈ 600, B ≈ 300, C ≈ 100.
+        assert abs(alloc["A"] - 600) <= 1
+        assert abs(alloc["B"] - 300) <= 1
+        assert abs(alloc["C"] - 100) <= 1
+        # Каждый получил ≥ 0 (нет искусственных минимумов).
+        for v in alloc.values():
+            assert v >= 0
+
+    def test_all_zero_weights_with_positive_floor(self):
+        # Все веса = 0 + положительный floor → active set пуст → нули,
+        # бюджет не «протекает» в нулевые ключи через floor.
+        weights = {"A": 0, "B": 0}
+        budget = 100
+        alloc = _dhondt_allocate(budget, weights, floor=10)
+        assert alloc == {"A": 0, "B": 0}

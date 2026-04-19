@@ -15,6 +15,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 
 from ml_training import (
+    TrainingOptions,
     _apply_label_smoothing,
     _augment_training_data,
     _estimate_model_size_bytes,
@@ -301,7 +302,11 @@ def test_train_model_use_fuzzy_dedup(_balanced_dataset):
         X=X2, y=y2, features=_simple_vectorizer(),
         C=1.0, max_iter=200, balanced=True,
         test_size=0.2, random_state=42,
-        use_smote=False, use_fuzzy_dedup=True, fuzzy_dedup_threshold=90,
+        options=TrainingOptions(
+            use_smote=False,
+            use_fuzzy_dedup=True,
+            fuzzy_dedup_threshold=90,
+        ),
     )
     assert pipe is not None
     assert isinstance(extras, dict)
@@ -316,7 +321,11 @@ def test_train_model_use_smote(_balanced_dataset):
         X=X_rare, y=y_rare, features=_simple_vectorizer(),
         C=1.0, max_iter=200, balanced=True,
         test_size=0.2, random_state=42,
-        use_smote=True, oversample_strategy="cap", max_dup_per_sample=5,
+        options=TrainingOptions(
+            use_smote=True,
+            oversample_strategy="cap",
+            max_dup_per_sample=5,
+        ),
     )
     assert pipe is not None
 
@@ -328,8 +337,8 @@ def test_train_model_use_hard_negatives(_balanced_dataset):
         X=X, y=y, features=_simple_vectorizer(),
         C=1.0, max_iter=200, balanced=True,
         test_size=0.2, random_state=42,
-        use_smote=False, use_hard_negatives=True,
         log_cb=logs.append,
+        options=TrainingOptions(use_smote=False, use_hard_negatives=True),
     )
     assert pipe is not None
 
@@ -343,8 +352,12 @@ def test_train_model_use_field_dropout():
         X=X, y=y, features=_simple_vectorizer(),
         C=1.0, max_iter=200, balanced=True,
         test_size=0.2, random_state=42,
-        use_smote=False,
-        use_field_dropout=True, field_dropout_prob=0.3, field_dropout_copies=2,
+        options=TrainingOptions(
+            use_smote=False,
+            use_field_dropout=True,
+            field_dropout_prob=0.3,
+            field_dropout_copies=2,
+        ),
     )
     assert pipe is not None
 
@@ -355,8 +368,11 @@ def test_train_model_use_label_smoothing(_balanced_dataset):
         X=X, y=y, features=_simple_vectorizer(),
         C=1.0, max_iter=200, balanced=True,
         test_size=0.2, random_state=42,
-        use_smote=False,
-        use_label_smoothing=True, label_smoothing_eps=0.1,
+        options=TrainingOptions(
+            use_smote=False,
+            use_label_smoothing=True,
+            label_smoothing_eps=0.1,
+        ),
     )
     assert pipe is not None
 
@@ -367,10 +383,14 @@ def test_train_model_all_augmentations_combined(_balanced_dataset):
         X=X, y=y, features=_simple_vectorizer(),
         C=1.0, max_iter=200, balanced=True,
         test_size=0.2, random_state=42,
-        use_smote=True,
-        use_hard_negatives=True,
-        use_fuzzy_dedup=True, fuzzy_dedup_threshold=95,
-        use_label_smoothing=True, label_smoothing_eps=0.05,
+        options=TrainingOptions(
+            use_smote=True,
+            use_hard_negatives=True,
+            use_fuzzy_dedup=True,
+            fuzzy_dedup_threshold=95,
+            use_label_smoothing=True,
+            label_smoothing_eps=0.05,
+        ),
     )
     assert pipe is not None
     assert "n_train" in extras
@@ -385,7 +405,7 @@ def test_train_model_extras_contains_model_size(_balanced_dataset):
         X=X, y=y, features=_simple_vectorizer(),
         C=1.0, max_iter=200, balanced=True,
         test_size=0.2, random_state=42,
-        use_smote=False,
+        options=TrainingOptions(use_smote=False),
     )
     assert "model_size_bytes" in extras
     assert extras["model_size_bytes"] > 0

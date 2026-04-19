@@ -71,6 +71,11 @@ python_functions = ["test_*"]
 # --cov-fail-under=50. Local runs stay fast (coverage ≈5-10× overhead with
 # branch tracking). See docs/adr/0006-mutation-testing.md.
 addopts = "--tb=short -q"
+filterwarnings = [
+    # После Wave 5 миграции legacy-kwargs → TrainingOptions(...) не должно
+    # оставаться ни одного DeprecationWarning из ml_training в тестах.
+    "error::DeprecationWarning:ml_training",
+]
 markers = [
     "unit: fast unit tests",
     "integration: integration tests with multiple modules",

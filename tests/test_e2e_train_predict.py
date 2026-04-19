@@ -71,7 +71,7 @@ _LABELS_FULL = _LABELS[0:1] * 12 + _LABELS[1:2] * 12 + _LABELS[2:3] * 12
 def trained_bundle(tmp_path_factory):
     """Train a minimal TF-IDF model and return (bundle_path, eval_metrics)."""
     from ml_vectorizers import make_hybrid_vectorizer
-    from ml_training import train_model
+    from ml_training import TrainingOptions, train_model
     from experiment_log import log_experiment
 
     tmp_path = tmp_path_factory.mktemp("model")
@@ -95,10 +95,9 @@ def trained_bundle(tmp_path_factory):
         C=1.0,
         max_iter=500,
         balanced=True,
-        calib_method="sigmoid",
         test_size=0.25,
         random_state=42,
-        use_smote=False,
+        options=TrainingOptions(calib_method="sigmoid", use_smote=False),
     )
 
     assert pipe is not None

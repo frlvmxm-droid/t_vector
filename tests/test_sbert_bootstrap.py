@@ -73,6 +73,62 @@ class TestPatchTorchAndPackaging:
             pytest.skip("packaging не установлен")
 
 
+class TestSafeImportRetryLoop:
+    def test_safe_import_recovers_from_nameerror_via_inject(self, monkeypatch):
+        """NameError → bp.inject(<имя>) → cache reset → retry → успех."""
+        from ml_sbert_bootstrap import safe_import_sentence_transformers
+
+        bp = SBERTBuiltinsPatch()
+        injected_calls: list[str] = []
+        _orig_inject = bp.inject
+
+        def _spy_inject(name: str) -> bool:
+            injected_calls.append(name)
+            return _orig_inject(name)
+
+        monkeypatch.setattr(bp, "inject", _spy_inject)
+
+        # Подменяем sys.modules['sentence_transformers'] на модуль-дразнилку:
+        # первые 2 import'а кидают NameError, 3-й — возвращает заглушку.
+        import sys as _sys
+        import types as _types
+
+        attempts = {"n": 0}
+
+        class _Stub:
+            pass
+
+        def _fake_module():
+            mod = _types.ModuleType("sentence_transformers")
+            mod.SentenceTransformer = _Stub
+            return mod
+
+        # Перехват __import__ для имени sentence_transformers.
+        _real_import = builtins.__import__
+
+        def _patched_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "sentence_transformers" and "SentenceTransformer" in (fromlist or ()):
+                attempts["n"] += 1
+                if attempts["n"] == 1:
+                    raise NameError("name 'foo' is not defined")
+                if attempts["n"] == 2:
+                    raise NameError("name 'bar' is not defined")
+                _sys.modules["sentence_transformers"] = _fake_module()
+                return _sys.modules["sentence_transformers"]
+            return _real_import(name, globals, locals, fromlist, level)
+
+        monkeypatch.setattr(builtins, "__import__", _patched_import)
+
+        result = safe_import_sentence_transformers(bp, max_retries=5, log_cb=None)
+        assert result is _Stub
+        # Базовые auto-инжекты + восстановления после двух NameError.
+        assert "torch" in injected_calls
+        assert "nn" in injected_calls
+        assert "foo" in injected_calls
+        assert "bar" in injected_calls
+        assert attempts["n"] == 3
+
+
 class TestBackwardCompatAlias:
     def test_ml_vectorizers_reexports_builtins_patch(self):
         from ml_vectorizers import _BuiltinsPatch
