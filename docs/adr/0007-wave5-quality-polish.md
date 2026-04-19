@@ -61,9 +61,14 @@ themes:
 Wave 5 result: 1503 passed / 0 failed / 0 DeprecationWarnings.
 
 ### Wave 6 (target: 10/10) — 7 blocks
-1. **Decompose `run_cluster()`** into 4 stage methods using
-   `ClusterRunState` (already prepared in Wave 4). Each stage matches
-   one СТАДИЯ banner; behavior unchanged, callers untouched.
+1. **Decompose `run_cluster()`** — partial. Stages 1 (`_cluster_worker_stage1`)
+   and 4 (`_cluster_worker_stage4`) already extracted in Wave 4. Wave 6
+   shipped one further extraction: model-save block (≈25 LoC) →
+   `_cluster_save_incremental_model(...)` (self-contained, kwargs-only).
+   Stages 2 (≈700 LoC, ~30 cross-cutting locals) and 3 (≈65 LoC, mutates
+   `labels`/`K`) **deferred to Wave 7** until UI-integration tests
+   exercise the full `run_cluster()` path — refactoring this much logic
+   without an end-to-end test risks silent behavior drift.
 2. **mypy strict for `ml_sbert_bootstrap`** — fix 11 type errors:
    `list[str]` annotations, `__exit__ -> Literal[False]`,
    `cast(Any, _torch_mod).__version__`, drop class-from-variable
@@ -95,16 +100,22 @@ Wave 5 result: 1503 passed / 0 failed / 0 DeprecationWarnings.
 - `temperature=100` in distillation no longer produces NaN;
   numerically equivalent (within 1e-6) to logsumexp at any T > 0.
 
-### Wave 6 expected
-- After 7 blocks: ≈9.7–10.0. Remaining gap (if any) is documentation /
-  release engineering, not code quality.
-- `app_cluster.py` shrinks ≈ 2 000 → ≈ 800 LoC; each stage method
-  becomes individually testable.
-- mypy strict-zone grows from 9 → 12 modules.
-- Coverage line/branch ≥ 75 %. Property tests catch a class of bugs
-  example tests cannot (random inputs, shrunken counter-examples).
-- CI failure surface widens 1× → 3× (Python versions) but parallel
-  matrix keeps wall-clock unchanged.
+### Wave 6 actual
+- After 7 blocks (Block 1 partial → deferred to Wave 7):
+  ≈9.4–9.6. Remaining gap is full `run_cluster()` decomposition + the
+  UI-integration tests required to validate it.
+- `app_cluster.py`: 4334 → 4322 LoC (model-save block extracted).
+  Full ≈2000 → ≈800 LoC reduction deferred to Wave 7.
+- mypy strict-zone: 9 → 11 modules (`ml_sbert_bootstrap`, `ml_distillation`).
+- Coverage line/branch: 38 % → 69 % via realistic `.coveragerc` omits +
+  +5 tests for `run_observability`. Gate ratcheted 50 → 65.
+  Plan target 75 % deferred to Wave 6.5 (calibration / SetFit / LLM
+  rerank fallback path tests).
+- Property tests (8 in `test_property_invariants.py`) catch a class of
+  bugs example tests cannot (random inputs, shrunken counter-examples).
+- CI failure surface widens 1× → 3× Python versions + dedicated
+  `ui-smoke` job (Xvfb + customtkinter); nightly perf-regression gate
+  (±5 % vs `ci/perf_baseline.json`).
 
 ## Alternatives considered
 - **Pydantic for `TrainingOptions`** — rejected; 13-field dataclass

@@ -3115,6 +3115,53 @@ class ClusterTabMixin:
         # ═══════════════════════════════════════════════════════════════
 
 
+    def _cluster_save_incremental_model(
+        self,
+        *,
+        snap: dict,
+        inc_labels_done: bool,
+        algo: str,
+        vec_kw: Any,
+        K: int,
+        kw: List[str],
+        km: Any,
+        hdb_model: Any,
+    ) -> None:
+        """Сохраняет fitted-vectorizer + alloc-метки кластеризации (сценарий #12).
+
+        Извлечено из run_cluster() стадии 3 в Wave 6 Block 1: блок был
+        самодостаточным (пишет файл по нормализованному пути, ловит свои
+        исключения), но требовал 9 локалов из тела стадии 2. Сейчас все
+        они приходят как kwargs — стадия 3 декомпозируется в дальнейших
+        итерациях, когда появится UI-integration-тест на полный
+        run_cluster() путь.
+        """
+        if not snap.get("save_cluster_model", False) or inc_labels_done:
+            return
+        try:
+            _mpath = ClusterModelPersistence.normalize_model_path(
+                snap.get("cluster_model_path", "").strip(),
+                str(CLUST_DIR / f"cluster_model_{now_stamp()}.joblib"),
+            )
+            _save_centers = km.cluster_centers_ if hasattr(km, "cluster_centers_") else None
+            _saved_bundle = build_cluster_model_bundle(
+                schema_version=self._CLUSTER_MODEL_SCHEMA_VERSION,
+                vectorizer=vec_kw,
+                algo=algo,
+                k_clusters=K,
+                kw=list(kw) if kw else [],
+                centers=_save_centers,
+                model=hdb_model,
+            )
+            _saved_path = ClusterModelPersistence.save_bundle(_saved_bundle, _mpath)
+            self.after(0, lambda p=_saved_path: self.log_cluster(
+                f"Модель сохранена: {Path(p).name} ✅"
+            ))
+        except Exception as _se:
+            self.after(0, lambda e=_se: self.log_cluster(
+                f"⚠️ Сохранение модели: {e}"
+            ))
+
     def _cluster_worker_stage4(
         self,
         _crs: "ClusterRunState",
@@ -4173,31 +4220,12 @@ class ClusterTabMixin:
                     labels = _labels_dedup[_dedup_reverse_map]
 
                 # ── #12 Сохранение модели кластеризации ───────────────────
-                if snap.get("save_cluster_model", False) and not _inc_labels_done:
-                    try:
-                        _mpath = ClusterModelPersistence.normalize_model_path(
-                            snap.get("cluster_model_path", "").strip(),
-                            str(CLUST_DIR / f"cluster_model_{now_stamp()}.joblib"),
-                        )
-                        _save_algo = _algo
-                        _save_centers = km.cluster_centers_ if hasattr(km, "cluster_centers_") else None
-                        _saved_bundle = build_cluster_model_bundle(
-                            schema_version=self._CLUSTER_MODEL_SCHEMA_VERSION,
-                            vectorizer=vec_kw,
-                            algo=_save_algo,
-                            k_clusters=K,
-                            kw=list(kw) if kw else [],
-                            centers=_save_centers,
-                            model=hdb if use_hdbscan and "hdb" in dir() else None,
-                        )
-                        _saved_path = ClusterModelPersistence.save_bundle(_saved_bundle, _mpath)
-                        self.after(0, lambda p=_saved_path: self.log_cluster(
-                            f"Модель сохранена: {Path(p).name} ✅"
-                        ))
-                    except Exception as _se:
-                        self.after(0, lambda e=_se: self.log_cluster(
-                            f"⚠️ Сохранение модели: {e}"
-                        ))
+                _hdb_model = hdb if (use_hdbscan and "hdb" in dir()) else None
+                self._cluster_save_incremental_model(
+                    snap=snap, inc_labels_done=_inc_labels_done,
+                    algo=_algo, vec_kw=vec_kw, K=K, kw=kw, km=km,
+                    hdb_model=_hdb_model,
+                )
 
                 self._cluster_step_quality_metrics(snap, Xv, labels, X_clean)
                 if snap.get("merge_similar_clusters", False) and K > 1:
