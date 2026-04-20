@@ -612,6 +612,34 @@ def run_clustering(vectors: VectorPack, snap: Mapping[str, object]) -> ClusterRe
             raise ValueError(
                 f"k_clusters={k} exceeds row count {n_rows}; pick a smaller K"
             )
+        # Auto-K: override `k` with silhouette/calinski/elbow pick when the
+        # caller asks for it. Only meaningful for KMeans-family algos —
+        # Ward-linkage agglo and LDA accept any K but the UI gates the
+        # switch the same way the desktop closure does (kmeans/ensemble).
+        if snap.get("cluster_auto_k") and algo == "kmeans":
+            try:
+                from auto_k_service import select_k
+
+                method = str(snap.get("cluster_auto_k_method", "silhouette"))
+                lo = max(2, k - 8)
+                hi = min(60, k + 8, n_rows - 1)
+                if lo < hi:
+                    seed_obj_ak = snap.get("random_state", 42)
+                    seed_ak = (
+                        int(seed_obj_ak)
+                        if isinstance(seed_obj_ak, (int, float))
+                        else 42
+                    )
+                    k = int(
+                        select_k(
+                            vectors.vectors,
+                            k_range=(lo, hi),
+                            method=method,
+                            random_state=seed_ak,
+                        )
+                    )
+            except Exception:  # noqa: BLE001 — fall back to caller-provided K
+                pass
     else:
         k = 0  # discovered post-fit; kept in meta for downstream logging
 
@@ -710,7 +738,7 @@ def run_clustering(vectors: VectorPack, snap: Mapping[str, object]) -> ClusterRe
     return ClusterResult(
         vectors=vectors,
         labels=labels,
-        meta={"K": k, "algo": algo, "model": model},
+        meta={"K": k, "algo": algo, "model": model, "auto_k": bool(snap.get("cluster_auto_k"))},
     )
 
 
