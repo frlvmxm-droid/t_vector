@@ -120,18 +120,142 @@
 
 ## 8) Установка и запуск
 
-### Быстрый запуск
+### 8.1 Десктоп (Windows / macOS / Linux с X11)
+
 - **Windows:** `run_app.bat`
 - **Linux/macOS:** `./run.sh`
 - Универсально: `python bootstrap_run.py`
 
-### Ручной запуск
+Ручной вариант:
 ```bash
 pip install -r requirements.txt
 python bootstrap_run.py
 ```
 
 Требования: Python 3.9+ и рабочий Tkinter.
+
+---
+
+### 8.2 Linux: headless CLI (без GUI)
+
+Для серверов без X11 — обучение, применение и кластеризация через
+командную строку. Tkinter не нужен.
+
+```bash
+# 1) Клонирование
+git clone <repo-url> t_vector && cd t_vector
+
+# 2) Установка — pinned через uv (рекомендуется, matches CI + Docker)
+pip install uv
+uv sync --frozen --extra ml          # добавьте --extra ui для web-UI
+
+# 2-alt) Или обычный pip
+pip install -r requirements.txt
+
+# 3) Обучение
+PYTHONPATH=. uv run python -m bank_reason_trainer train \
+    --data train.xlsx --out model.joblib \
+    --text-col text --label-col label
+
+# 4) Применение
+PYTHONPATH=. uv run python -m bank_reason_trainer apply \
+    --model model.joblib --data in.xlsx --out out.xlsx \
+    --text-col text
+
+# 5) Кластеризация
+PYTHONPATH=. uv run python -m bank_reason_trainer cluster \
+    --files a.xlsx b.xlsx --out clusters.csv \
+    --text-col text --k-clusters 8
+```
+
+Подробнее по CLI, Docker, переменным окружения — см.
+[`docs/DEPLOY.md`](docs/DEPLOY.md) и `CLAUDE.md → Headless CLI`.
+
+---
+
+### 8.3 Web-UI на Linux (Voilà, локально)
+
+Браузерный вариант всех трёх вкладок (Обучение / Применение /
+Кластеризация) поверх service-слоя. Tkinter не требуется.
+
+```bash
+# 1) Установить ML- и UI-extras
+uv sync --frozen --extra ml --extra ui
+#   или: pip install "ipywidgets>=8.0" "voila>=0.5" scikit-learn joblib pandas openpyxl
+
+# 2) Проверка: импорт приложения
+PYTHONPATH=. python -c "from ui_widgets import build_app; print(type(build_app()))"
+#   → <class 'ipywidgets.widgets.widget_box.VBox'>
+
+# 3) Запуск Voilà
+PYTHONPATH=. voila notebooks/ui.ipynb --port 8866 --no-browser
+#   откройте http://localhost:8866/  (на удалённом хосте — проброс порта
+#   через `ssh -L 8866:localhost:8866 user@host`)
+```
+
+Страница сохраняет значения виджетов (`k_clusters`, `vec_mode`, пороги
+и т. д.) в `~/.classification_tool/last_session.json` и восстанавливает
+их при следующем открытии вкладки.
+
+Опционально — переменные окружения:
+```bash
+export HF_HOME=/shared/hf-cache            # общий кэш HuggingFace
+export BRT_LLM_PROVIDER=ollama             # LLM для нейминга кластеров
+export BRT_LLM_MODEL=qwen3:30b             # тег из `ollama list`
+export BRT_LLM_API_KEY=""                  # пусто для ollama
+export LLM_SNAPSHOT_KEY="$(python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
+```
+
+---
+
+### 8.4 JupyterHub (multi-user deployment)
+
+Подробный гайд — [`docs/JUPYTERHUB_UI.md`](docs/JUPYTERHUB_UI.md).
+Кратко, шаги администратора:
+
+1. **Установить extras в user-image / per-user env:**
+   ```bash
+   uv sync --frozen --extra ml --extra ui
+   # или: pip install "ipywidgets>=8.0" "voila>=0.5"
+   ```
+
+2. **Перевести spawner на дашборд** в `jupyterhub_config.py`:
+   ```python
+   c.Spawner.cmd = ["jupyter-labhub"]
+   c.Spawner.args = [
+       "--ServerApp.default_url=/voila/render/notebooks/ui.ipynb",
+   ]
+   ```
+   Пользователи будут логиниться сразу в Voilà-дашборд; полный Lab
+   остаётся доступен по `/user/<name>/lab`.
+
+3. **(Опц.) общий HuggingFace-кэш** — чтобы SBERT / T5 не качались
+   у каждого пользователя отдельно:
+   ```python
+   c.Spawner.environment = {"HF_HOME": "/shared/hf-cache"}
+   ```
+
+4. **(Опц.) общий том с данными** — смонтируйте volume и скажите
+   пользователям абсолютный путь: web-UI принимает его в поле
+   *«Путь:»* (обходит 50 MB-лимит browser-upload).
+
+5. **Trust-store для моделей.** `.joblib` проверяются по SHA-256
+   через `model_loader.TrustStore` (файл
+   `~/.classification_tool/trusted_models.json`). На мульти-юзер
+   хабе этот путь должен лежать на персистентном per-user volume.
+
+6. **Smoke-тест на одном юзере:**
+   ```bash
+   RUN_VOILA_SMOKE=1 PYTHONPATH=. pytest tests/test_voila_smoke.py -v
+   ```
+
+Известные ограничения web-UI (полный список —
+[`docs/JUPYTERHUB_UI.md#known-limitations`](docs/JUPYTERHUB_UI.md)):
+- Plotly/Cleanlab-визуализации доступны только в desktop-версии.
+- BERTopic / SetFit / FASTopic — только через CLI (`--allow-skeleton`)
+  или desktop.
+- GPU-contention на мульти-юзер-хабах регулируется лимитами
+  JupyterHub, а не приложением.
 
 ---
 
