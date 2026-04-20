@@ -48,6 +48,12 @@ ml = [
     "umap-learn>=0.5",
     "pymorphy3>=1.2",
 ]
+# Jupyter / Voilà web UI — install on the JupyterHub user image.
+# See docs/JUPYTERHUB_UI.md for deployment details.
+ui = [
+    "ipywidgets>=8.0",
+    "voila>=0.5",
+]
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]
