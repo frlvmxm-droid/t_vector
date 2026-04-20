@@ -2,6 +2,7 @@
 """Voilà widget: 'Кластеризация' panel — files → ClusteringWorkflow.run → CSV."""
 from __future__ import annotations
 
+import os
 import pathlib
 import tempfile
 import threading
@@ -86,6 +87,93 @@ def build_cluster_panel() -> Any:
                                 description="SVD dim:",
                                 layout=w.Layout(width="280px"))
 
+    # Common cluster knobs
+    n_init_cluster = w.IntSlider(value=10, min=1, max=50, step=1,
+                                 description="n_init:",
+                                 layout=w.Layout(width="260px"))
+    cluster_min_df = w.IntSlider(value=2, min=1, max=20, step=1,
+                                 description="min_df:",
+                                 layout=w.Layout(width="260px"))
+    sbert_device = w.Dropdown(
+        options=[("Auto", "auto"), ("CPU", "cpu"),
+                 ("CUDA", "cuda"), ("MPS", "mps")],
+        value="auto", description="SBERT device:",
+        layout=w.Layout(width="260px"),
+        style={"description_width": "initial"},
+    )
+
+    # HDBSCAN-specific knobs (visible only when algo=hdbscan)
+    hdbscan_min_cs = w.IntSlider(value=5, min=2, max=100, step=1,
+                                 description="min_cluster_size:",
+                                 layout=w.Layout(width="320px"),
+                                 style={"description_width": "initial"})
+    hdbscan_min_samples = w.IntSlider(value=5, min=1, max=50, step=1,
+                                      description="min_samples:",
+                                      layout=w.Layout(width="280px"),
+                                      style={"description_width": "initial"})
+    hdbscan_eps = w.FloatSlider(value=0.0, min=0.0, max=1.0, step=0.01,
+                                description="eps:",
+                                layout=w.Layout(width="260px"))
+
+    # LDA-specific
+    lda_max_iter = w.IntSlider(value=10, min=5, max=100, step=5,
+                               description="LDA max_iter:",
+                               layout=w.Layout(width="280px"),
+                               style={"description_width": "initial"})
+
+    # MiniBatch toggle
+    minibatch_kmeans = w.Checkbox(value=False, description="MiniBatch KMeans")
+    minibatch_size = w.IntSlider(value=1024, min=128, max=8192, step=128,
+                                 description="batch:",
+                                 layout=w.Layout(width="260px"))
+
+    # UMAP projection (opt-in; honored by build_vectors in phase 11+)
+    umap_enabled = w.Checkbox(value=False, description="UMAP projection")
+    umap_n_components = w.IntSlider(value=10, min=2, max=64, step=1,
+                                    description="n_comp:",
+                                    layout=w.Layout(width="240px"))
+    umap_n_neighbors = w.IntSlider(value=15, min=5, max=100, step=1,
+                                   description="n_neigh:",
+                                   layout=w.Layout(width="240px"))
+    umap_min_dist = w.FloatSlider(value=0.1, min=0.0, max=1.0, step=0.01,
+                                  description="min_dist:",
+                                  layout=w.Layout(width="240px"))
+    umap_metric = w.Dropdown(
+        options=["cosine", "euclidean", "correlation"],
+        value="cosine", description="metric:",
+        layout=w.Layout(width="220px"),
+    )
+    umap_use_pca_pre = w.Checkbox(value=False, description="PCA pre-reduce")
+    umap_box = w.VBox([
+        w.HBox([umap_enabled, umap_use_pca_pre]),
+        w.HBox([umap_n_components, umap_n_neighbors]),
+        w.HBox([umap_min_dist, umap_metric]),
+    ])
+    umap_accordion = w.Accordion(children=[umap_box])
+    umap_accordion.set_title(0, "Проекция (UMAP)")
+    umap_accordion.selected_index = None
+
+    # Postprocess switches (Phase 11 will wire them to services)
+    _llm_api_key = os.environ.get("BRT_LLM_API_KEY", "")
+    _llm_provider = os.environ.get("BRT_LLM_PROVIDER", "offline")
+    use_llm_naming = w.Checkbox(
+        value=False, description="LLM-naming кластеров",
+        disabled=(not _llm_api_key and _llm_provider.lower() != "offline"),
+    )
+    use_t5_summary = w.Checkbox(value=False, description="T5 summary (ru-T5)")
+    use_auto_k = w.Checkbox(value=False, description="Auto-K (silhouette)")
+    merge_similar = w.Checkbox(value=False, description="Merge similar clusters")
+    merge_threshold = w.FloatSlider(
+        value=0.85, min=0.5, max=1.0, step=0.01,
+        description="merge thr:",
+        layout=w.Layout(width="280px"),
+    )
+    n_repr_examples = w.IntSlider(
+        value=5, min=1, max=20, step=1,
+        description="repr-K:",
+        layout=w.Layout(width="240px"),
+    )
+
     run_btn = w.Button(description="▶  Кластеризовать", button_style="primary",
                        layout=w.Layout(width="220px"))
 
@@ -111,11 +199,17 @@ def build_cluster_panel() -> Any:
         sbert_model2.layout.display = "" if mode == "ensemble" else "none"
         combo_alpha.layout.display = "" if mode == "combo" else "none"
         combo_svd_dim.layout.display = "" if mode == "combo" else "none"
-        k_clusters.disabled = algo.value == "hdbscan"
+        sbert_device.layout.display = "" if mode in ("sbert", "combo", "ensemble") else "none"
+        k_clusters.disabled = algo.value == "hdbscan" or use_auto_k.value
+        hdbscan_min_cs.layout.display = "" if algo.value == "hdbscan" else "none"
+        hdbscan_min_samples.layout.display = "" if algo.value == "hdbscan" else "none"
+        hdbscan_eps.layout.display = "" if algo.value == "hdbscan" else "none"
+        lda_max_iter.layout.display = "" if algo.value == "lda" else "none"
         _ = current_algos  # keep for future validation hooks
 
     vec_mode.observe(_sync_visibility, names="value")
     algo.observe(_sync_visibility, names="value")
+    use_auto_k.observe(_sync_visibility, names="value")
     _sync_visibility()
 
     def _run_clustering() -> None:
@@ -146,6 +240,26 @@ def build_cluster_panel() -> Any:
                 "text_col": text_col.value,
                 "output_path": str(out_csv),
                 "sbert_model": sbert_model.value.strip() or "cointegrated/rubert-tiny2",
+                "sbert_device": sbert_device.value,
+                "n_init_cluster": int(n_init_cluster.value),
+                "cluster_min_df": int(cluster_min_df.value),
+                # Post-process switches (Phase 11 service layer honors these)
+                "cluster_auto_k": bool(use_auto_k.value),
+                "use_llm_naming": bool(use_llm_naming.value),
+                "use_t5_summary": bool(use_t5_summary.value),
+                "merge_similar_clusters": bool(merge_similar.value),
+                "merge_threshold": float(merge_threshold.value),
+                "n_repr_examples": int(n_repr_examples.value),
+                # MiniBatch KMeans
+                "minibatch_kmeans": bool(minibatch_kmeans.value),
+                "minibatch_batch_size": int(minibatch_size.value),
+                # UMAP projection (honored by build_vectors when enabled)
+                "use_umap": bool(umap_enabled.value),
+                "umap_n_components": int(umap_n_components.value),
+                "umap_n_neighbors": int(umap_n_neighbors.value),
+                "umap_min_dist": float(umap_min_dist.value),
+                "umap_metric": umap_metric.value,
+                "umap_use_pca_pre": bool(umap_use_pca_pre.value),
             }
             if vec_mode.value == "ensemble":
                 snap["sbert_model2"] = (
@@ -154,6 +268,12 @@ def build_cluster_panel() -> Any:
             if vec_mode.value == "combo":
                 snap["combo_alpha"] = float(combo_alpha.value)
                 snap["combo_svd_dim"] = int(combo_svd_dim.value)
+            if algo.value == "hdbscan":
+                snap["hdbscan_min_cluster_size"] = int(hdbscan_min_cs.value)
+                snap["hdbscan_min_samples"] = int(hdbscan_min_samples.value)
+                snap["hdbscan_eps"] = float(hdbscan_eps.value)
+            if algo.value == "lda":
+                snap["lda_max_iter"] = int(lda_max_iter.value)
 
             progress.update(0.05, "Запуск pipeline…")
             from cluster_workflow_service import ClusteringWorkflow
@@ -221,20 +341,36 @@ def build_cluster_panel() -> Any:
         "АЛГОРИТМ",
         [
             w.HBox([vec_mode, algo]),
-            k_clusters,
+            w.HBox([k_clusters, use_auto_k]),
+            w.HBox([n_init_cluster, cluster_min_df, sbert_device]),
             sbert_model,
             sbert_model2,
             w.HBox([combo_alpha, combo_svd_dim]),
+            w.HBox([hdbscan_min_cs, hdbscan_min_samples, hdbscan_eps]),
+            lda_max_iter,
+            w.HBox([minibatch_kmeans, minibatch_size]),
             warn_html,
         ],
         subtitle="Векторизация → кластеризация.",
+    )
+    postproc_card = section_card(
+        "ПОСТ-ОБРАБОТКА",
+        [
+            w.HBox([use_llm_naming, use_t5_summary]),
+            w.HBox([merge_similar, merge_threshold, n_repr_examples]),
+            umap_accordion,
+        ],
+        subtitle=(
+            "Auto-K / LLM-naming / T5-summary / merge similar — "
+            "требуют Phase 11 service-layer. UMAP применяется до кластеризации."
+        ),
     )
     run_card = section_card(
         "РЕЗУЛЬТАТЫ КЛАСТЕРИЗАЦИИ",
         [w.HBox([run_btn, download_box]), progress.widget, metric_cards, summary_out],
         subtitle="Запуск, прогресс и сводка по кластерам.",
     )
-    return w.VBox([sources_card, algo_card, run_card])
+    return w.VBox([sources_card, algo_card, postproc_card, run_card])
 
 
 # ─── helpers ────────────────────────────────────────────────────────────
