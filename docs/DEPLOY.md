@@ -17,6 +17,7 @@ safe to use from batch scripts, notebooks, and Docker.
 | Python CLI on Linux server | batch pipelines, cron, SSH | `python -m bank_reason_trainer <cmd>` |
 | Docker | reproducible infra, shared CI | `docker build + docker run` |
 | JupyterHub / notebook | interactive analysis, experiments | `from cluster_workflow_service import ClusteringWorkflow` |
+| Voilà dashboard on JupyterHub | browser web UI (3 tabs, no Tk) | `voila notebooks/ui.ipynb` → see [`JUPYTERHUB_UI.md`](JUPYTERHUB_UI.md) |
 
 ---
 
@@ -262,6 +263,32 @@ print(f"K={result.n_clusters}  noise={result.n_noise}")
 
 ---
 
+## Scenario D — Voilà dashboard (browser-based web UI)
+
+If your users want a browser UI instead of writing notebook cells,
+the repo ships a three-tab Voilà dashboard
+(`notebooks/ui.ipynb` + `ui_widgets/`) that wraps the same service
+layer used above.
+
+```bash
+# On the JupyterHub user image
+uv sync --frozen --extra ml --extra ui   # adds ipywidgets + voila
+
+# In jupyterhub_config.py — land each user on the dashboard
+c.Spawner.cmd  = ["jupyter-labhub"]
+c.Spawner.args = ["--ServerApp.default_url=/voila/render/notebooks/ui.ipynb"]
+```
+
+The dashboard exposes **Обучение / Применение / Кластеризация** as
+tabs with file upload, progress bar, live log, and one-click
+download of the resulting `model.joblib` / `predictions.xlsx` /
+`clusters.csv`.
+
+Full operator setup, user guide, and troubleshooting live in
+[`docs/JUPYTERHUB_UI.md`](JUPYTERHUB_UI.md).
+
+---
+
 ## Troubleshooting
 
 | Symptom | Cause & fix |
@@ -290,6 +317,7 @@ print(f"K={result.n_clusters}  noise={result.n_noise}")
 ---
 
 See also: [`CLAUDE.md`](../CLAUDE.md) (Quick Start),
+[`docs/JUPYTERHUB_UI.md`](JUPYTERHUB_UI.md) (browser dashboard),
 [`docs/DEVELOPER_GUIDE.md`](DEVELOPER_GUIDE.md),
 [`docs/BUNDLE_LIFECYCLE.md`](BUNDLE_LIFECYCLE.md),
 [`docs/adr/0008-pin-wheels-uv-lock.md`](adr/0008-pin-wheels-uv-lock.md).

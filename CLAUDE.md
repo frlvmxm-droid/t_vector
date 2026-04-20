@@ -18,7 +18,9 @@ Shell shortcuts: `run.sh` (Linux/macOS), `run_app.bat` (Windows).
 
 Running on a remote server or JupyterHub? See
 [`docs/DEPLOY.md`](docs/DEPLOY.md) for headless CLI, Docker, and
-notebook recipes.
+notebook recipes. For the browser-based Voilà dashboard (three-tab
+web UI backed by the service layer) see
+[`docs/JUPYTERHUB_UI.md`](docs/JUPYTERHUB_UI.md).
 
 ### Reproducible install (CI / Docker / contributors)
 
