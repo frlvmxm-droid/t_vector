@@ -1,9 +1,9 @@
-# -*- coding: utf-8 -*-
 """History dialog — last N experiments from `experiment_log`."""
 from __future__ import annotations
 
 import html
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 LIMIT = 20
 

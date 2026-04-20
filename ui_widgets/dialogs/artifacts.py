@@ -1,11 +1,11 @@
-# -*- coding: utf-8 -*-
 """Artifacts dialog — list `.joblib` bundles in `~/.classification_tool/`."""
 from __future__ import annotations
 
 import hashlib
 import html
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 ROOT_CANDIDATES = (
     "~/.classification_tool",

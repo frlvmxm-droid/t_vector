@@ -1,8 +1,7 @@
-# -*- coding: utf-8 -*-
 """Top-level entry point for the Voilà dashboard: dark-teal sidebar app."""
 from __future__ import annotations
 
-from typing import Any, List, Tuple
+from typing import Any
 
 
 def build_app() -> Any:
@@ -24,7 +23,10 @@ def build_app() -> Any:
         build_settings_dialog,
     )
     from ui_widgets.theme import (
-        ACCENT2, MUTED, inject_css, status_badge,
+        ACCENT2,
+        MUTED,
+        inject_css,
+        status_badge,
     )
     from ui_widgets.train_panel import build_train_panel
 
@@ -58,12 +60,12 @@ def build_app() -> Any:
     )
 
     # ── Sidebar nav buttons ────────────────────────────────────────────
-    nav_items: List[Tuple[str, str, str]] = [
+    nav_items: list[tuple[str, str, str]] = [
         ("📚", "Обучение",      ""),
         ("🎯", "Классификация", ""),
         ("🧩", "Кластеризация", ""),
     ]
-    nav_buttons: List[Any] = []
+    nav_buttons: list[Any] = []
     for icon, label, badge in nav_items:
         desc = f"{icon}  {label}" + (f"   ({badge})" if badge else "")
         btn = w.Button(
@@ -103,7 +105,7 @@ def build_app() -> Any:
         ("📦", "Артефакты моделей",     4),
         ("⚙️", "Настройки · LLM keys",  5),
     ]
-    context_buttons: List[Any] = []
+    context_buttons: list[Any] = []
     for icon, label, _slot in context_items:
         btn = w.Button(
             description=f"{icon}  {label}",
@@ -165,7 +167,7 @@ def build_app() -> Any:
             justify_content="space-between",
             align_items="center",
             padding="10px 14px 12px 18px",
-            border_bottom=f"1px solid #112d20",
+            border_bottom="1px solid #112d20",
             width="100%",
         ),
     )

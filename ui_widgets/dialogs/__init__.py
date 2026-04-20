@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Read-only context dialogs (History / Artifacts / Settings).
 
 Each ``build_*_dialog()`` returns an ``ipywidgets.VBox`` rendered inside

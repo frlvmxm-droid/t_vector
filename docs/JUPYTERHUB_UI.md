@@ -190,7 +190,7 @@ and are surfaced as a warning banner in the tab.
 
 ---
 
-## Advanced features (Phases 8–11)
+## Advanced features (Phases 8–12)
 
 | Tab | Feature | How to use |
 |---|---|---|
@@ -215,6 +215,13 @@ The Auto-K / LLM-naming / T5 services are pure-Python modules
 service layer and have unit tests in `tests/test_*_service.py`. The
 desktop closures in `app_cluster.py` are unchanged; the new modules are
 the canonical implementation for the web-UI / CLI.
+
+Context dialogs (Phase 12) use an `ipywidgets.Stack` overlay: the three
+workflow panels live at slots 0..2, the dialogs at slots 3..5. Clicking a
+context button swaps the `selected_index`; clicking the ✕ button returns
+to the last-active workflow panel. All dialogs are read-only; editing
+LLM keys or deleting artifacts is out of scope for the web-UI (use the
+desktop app or shell tools).
 
 ---
 

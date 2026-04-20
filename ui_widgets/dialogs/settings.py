@@ -1,10 +1,10 @@
-# -*- coding: utf-8 -*-
 """Settings dialog — read-only deps + LLM-keys indicator."""
 from __future__ import annotations
 
 import html
 import os
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 OPTIONAL_DEPS = (
     ("ipywidgets", "ipywidgets"),
