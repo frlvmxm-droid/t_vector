@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Voilà widget: 'Кластеризация' panel — files → ClusteringWorkflow.run → CSV."""
 from __future__ import annotations
 
@@ -7,12 +6,11 @@ import pathlib
 import tempfile
 import threading
 import traceback
-from typing import Any, List
+from typing import Any
 
 from ui_widgets.io import download_link, save_upload_to_tmp
 from ui_widgets.progress import ProgressPanel
 from ui_widgets.theme import metric_card, section_card
-
 
 _SUPPORTED_COMBOS = {
     "tfidf": ("kmeans", "agglo", "lda", "hdbscan"),
@@ -212,6 +210,8 @@ def build_cluster_panel() -> Any:
     use_auto_k.observe(_sync_visibility, names="value")
     _sync_visibility()
 
+    cancel_event_box: dict[str, threading.Event] = {}
+
     def _run_clustering() -> None:
         try:
             paths = _resolve_input_paths(upload, shared_paths.value)
@@ -276,13 +276,22 @@ def build_cluster_panel() -> Any:
                 snap["lda_max_iter"] = int(lda_max_iter.value)
 
             progress.update(0.05, "Запуск pipeline…")
-            from cluster_workflow_service import ClusteringWorkflow
-            result = ClusteringWorkflow.run(
-                files_snapshot=[str(p) for p in paths],
-                snap=snap,
-                log_cb=progress.log,
-                progress_cb=lambda p, s: progress.update(0.05 + 0.9 * float(p), s),
+            from cluster_workflow_service import (
+                ClusteringWorkflow,
+                WorkflowCancelled,
             )
+            try:
+                result = ClusteringWorkflow.run(
+                    files_snapshot=[str(p) for p in paths],
+                    snap=snap,
+                    log_cb=progress.log,
+                    progress_cb=lambda p, s: progress.update(0.05 + 0.9 * float(p), s),
+                    cancel_event=cancel_event_box.get("event"),
+                )
+            except WorkflowCancelled as exc:
+                progress.log(f"🛑 {exc}")
+                progress.mark_error("Отменено")
+                return
 
             progress.update(0.98, "Формирование ссылки на скачивание…")
             summary_out.clear_output()
@@ -317,6 +326,9 @@ def build_cluster_panel() -> Any:
         summary_out.clear_output()
         metric_cards.value = ""
         download_box.children = ()
+        event = threading.Event()
+        cancel_event_box["event"] = event
+        progress.attach_cancel_event(event)
         threading.Thread(target=_run_clustering, daemon=True).start()
 
     run_btn.on_click(_on_click)
@@ -374,8 +386,8 @@ def build_cluster_panel() -> Any:
 
 
 # ─── helpers ────────────────────────────────────────────────────────────
-def _resolve_input_paths(upload_widget: Any, shared: str) -> List[pathlib.Path]:
-    out: List[pathlib.Path] = []
+def _resolve_input_paths(upload_widget: Any, shared: str) -> list[pathlib.Path]:
+    out: list[pathlib.Path] = []
     if upload_widget.value:
         out.extend(save_upload_to_tmp(upload_widget))
     for line in (shared or "").splitlines():

@@ -1,7 +1,13 @@
-# -*- coding: utf-8 -*-
-"""Reusable progress-panel widget: bar + phase label + rolling log."""
+"""Reusable progress-panel widget: bar + phase label + rolling log.
+
+Phase 14: exposes an optional cancel button. Panels that pass a
+``threading.Event`` via :meth:`attach_cancel_event` get a red ⏹
+cancel button; clicking it calls ``event.set()`` so the service
+layer breaks on the next ``_check_cancelled`` call.
+"""
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 
@@ -25,6 +31,14 @@ class ProgressPanel:
         )
         self.pct = w.Label(value="0%")
         self.phase = w.Label(value="—")
+        self.cancel_btn = w.Button(
+            description="⏹ Отмена",
+            button_style="danger",
+            disabled=True,
+            layout=w.Layout(width="110px", display="none"),
+        )
+        self._cancel_event: threading.Event | None = None
+        self.cancel_btn.on_click(self._on_cancel_click)
         self.output = w.Output(
             layout=w.Layout(
                 height=log_height,
@@ -38,11 +52,30 @@ class ProgressPanel:
     def widget(self) -> Any:
         w = self._w
         return w.VBox([
-            w.HBox([self.bar, self.pct]),
+            w.HBox([self.bar, self.pct, self.cancel_btn]),
             self.phase,
             w.HTML("<b>Лог:</b>"),
             self.output,
         ])
+
+    def attach_cancel_event(self, event: threading.Event) -> None:
+        """Wire the cancel button to ``event.set()`` and make it visible."""
+        self._cancel_event = event
+        self.cancel_btn.disabled = False
+        self.cancel_btn.layout.display = ""
+        self.cancel_btn.description = "⏹ Отмена"
+
+    def detach_cancel_event(self) -> None:
+        """Hide the cancel button (call when the worker finishes)."""
+        self._cancel_event = None
+        self.cancel_btn.disabled = True
+        self.cancel_btn.layout.display = "none"
+
+    def _on_cancel_click(self, _btn: Any) -> None:
+        if self._cancel_event is not None:
+            self._cancel_event.set()
+            self.cancel_btn.disabled = True
+            self.cancel_btn.description = "⏹ Отмена запрошена…"
 
     def update(self, frac: float, msg: str = "") -> None:
         """Set progress ``0.0..1.0`` and (optionally) phase text."""
@@ -69,7 +102,9 @@ class ProgressPanel:
         self.bar.bar_style = "success"
         self.pct.value = "100%"
         self.phase.value = msg
+        self.detach_cancel_event()
 
     def mark_error(self, msg: str = "Ошибка ❌") -> None:
         self.bar.bar_style = "danger"
         self.phase.value = msg
+        self.detach_cancel_event()
