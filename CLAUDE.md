@@ -16,6 +16,10 @@ python app.py
 
 Shell shortcuts: `run.sh` (Linux/macOS), `run_app.bat` (Windows).
 
+Running on a remote server or JupyterHub? See
+[`docs/DEPLOY.md`](docs/DEPLOY.md) for headless CLI, Docker, and
+notebook recipes.
+
 ### Reproducible install (CI / Docker / contributors)
 
 `uv.lock` is the source of truth for fully-pinned wheels (ADR-0008).
