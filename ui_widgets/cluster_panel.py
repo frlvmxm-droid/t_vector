@@ -6,6 +6,7 @@ import pathlib
 import tempfile
 import threading
 import traceback
+from collections.abc import Callable
 from typing import Any
 
 from ui_widgets.io import download_link, save_upload_to_tmp
@@ -20,8 +21,12 @@ _SUPPORTED_COMBOS = {
 }
 
 
-def build_cluster_panel() -> Any:
-    """Builds the 'Кластеризация' tab. Returns an ipywidgets container."""
+def build_cluster_panel() -> tuple[Any, dict[str, Any], Callable[[], dict[str, Any]]]:
+    """Builds the 'Кластеризация' tab.
+
+    Returns ``(vbox, widgets_by_key, snap_fn)`` for session save/restore.
+    Keys are prefixed ``"cluster."`` to keep panel snaps disjoint.
+    """
     import ipywidgets as w
 
     # ── Inputs ─────────────────────────────────────────────────────────
@@ -382,7 +387,45 @@ def build_cluster_panel() -> Any:
         [w.HBox([run_btn, download_box]), progress.widget, metric_cards, summary_out],
         subtitle="Запуск, прогресс и сводка по кластерам.",
     )
-    return w.VBox([sources_card, algo_card, postproc_card, run_card])
+    # ── Session snap wiring ─────────────────────────────────────────────
+    widgets_by_key: dict[str, Any] = {
+        "cluster.shared_paths": shared_paths,
+        "cluster.text_col": text_col,
+        "cluster.vec_mode": vec_mode,
+        "cluster.algo": algo,
+        "cluster.k_clusters": k_clusters,
+        "cluster.sbert_model": sbert_model,
+        "cluster.sbert_model2": sbert_model2,
+        "cluster.sbert_device": sbert_device,
+        "cluster.combo_alpha": combo_alpha,
+        "cluster.combo_svd_dim": combo_svd_dim,
+        "cluster.n_init_cluster": n_init_cluster,
+        "cluster.cluster_min_df": cluster_min_df,
+        "cluster.hdbscan_min_cluster_size": hdbscan_min_cs,
+        "cluster.hdbscan_min_samples": hdbscan_min_samples,
+        "cluster.hdbscan_eps": hdbscan_eps,
+        "cluster.lda_max_iter": lda_max_iter,
+        "cluster.minibatch_kmeans": minibatch_kmeans,
+        "cluster.minibatch_size": minibatch_size,
+        "cluster.use_umap": umap_enabled,
+        "cluster.umap_n_components": umap_n_components,
+        "cluster.umap_n_neighbors": umap_n_neighbors,
+        "cluster.umap_min_dist": umap_min_dist,
+        "cluster.umap_metric": umap_metric,
+        "cluster.umap_use_pca_pre": umap_use_pca_pre,
+        "cluster.use_llm_naming": use_llm_naming,
+        "cluster.use_t5_summary": use_t5_summary,
+        "cluster.use_auto_k": use_auto_k,
+        "cluster.merge_similar": merge_similar,
+        "cluster.merge_threshold": merge_threshold,
+        "cluster.n_repr_examples": n_repr_examples,
+    }
+
+    def snap_fn() -> dict[str, Any]:
+        return {key: widget.value for key, widget in widgets_by_key.items()}
+
+    vbox = w.VBox([sources_card, algo_card, postproc_card, run_card])
+    return vbox, widgets_by_key, snap_fn
 
 
 # ─── helpers ────────────────────────────────────────────────────────────

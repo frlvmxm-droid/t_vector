@@ -6,6 +6,7 @@ import pathlib
 import tempfile
 import threading
 import traceback
+from collections.abc import Callable
 from typing import Any
 
 from ui_widgets.io import detect_tabular_format, download_link, save_upload_to_tmp
@@ -13,8 +14,14 @@ from ui_widgets.progress import ProgressPanel
 from ui_widgets.theme import section_card
 
 
-def build_train_panel() -> Any:
-    """Builds the 'Обучение' tab. Returns an ipywidgets container."""
+def build_train_panel() -> tuple[Any, dict[str, Any], Callable[[], dict[str, Any]]]:
+    """Builds the 'Обучение' tab.
+
+    Returns ``(vbox, widgets_by_key, snap_fn)`` so ``notebook_app`` can wire
+    session save/restore: ``widgets_by_key`` maps ``"train.<name>"`` keys to
+    the underlying widgets (``.value`` restorable), ``snap_fn`` returns the
+    current snap dict for ``DebouncedSaver``.
+    """
     import ipywidgets as w
 
     # ── Inputs ──────────────────────────────────────────────────────────
@@ -314,7 +321,39 @@ def build_train_panel() -> Any:
         subtitle="macro-F1 / accuracy / размер сплитов + скачивание model.joblib.",
     )
 
-    return w.VBox([sources_card, params_card, run_card, metrics_card])
+    # ── Session snap wiring ─────────────────────────────────────────────
+    # Namespaced with "train." to avoid collisions with apply/cluster keys
+    # (e.g. text_col lives in all three panels).
+    widgets_by_key: dict[str, Any] = {
+        "train.text_col": text_col,
+        "train.label_col": label_col,
+        "train.C": C,
+        "train.max_iter": max_iter,
+        "train.test_size": test_size,
+        "train.balanced": balanced,
+        "train.use_smote": use_smote,
+        "train.calib_method": calib,
+        "train.use_fuzzy_dedup": fuzzy_dedup,
+        "train.fuzzy_dedup_threshold": fuzzy_thr,
+        "train.auto_profile": auto_profile,
+        "train.sbert_device": sbert_device,
+        "train.use_label_smoothing": use_label_smoothing,
+        "train.label_smoothing_eps": label_smoothing_eps,
+        "train.run_cv": run_cv,
+        "train.use_hard_negatives": use_hard_negatives,
+        "train.use_field_dropout": use_field_dropout,
+        "train.field_dropout_prob": field_dropout_prob,
+        "train.field_dropout_copies": field_dropout_copies,
+        "train.oversample_strategy": oversample_strategy,
+        "train.max_dup_per_sample": max_dup_per_sample,
+        "train.shared_path": shared_path,
+    }
+
+    def snap_fn() -> dict[str, Any]:
+        return {key: widget.value for key, widget in widgets_by_key.items()}
+
+    vbox = w.VBox([sources_card, params_card, run_card, metrics_card])
+    return vbox, widgets_by_key, snap_fn
 
 
 # ─── helpers ────────────────────────────────────────────────────────────

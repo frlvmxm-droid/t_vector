@@ -22,6 +22,7 @@ def build_app() -> Any:
         build_history_dialog,
         build_settings_dialog,
     )
+    from ui_widgets.session import DebouncedSaver, load_last_session
     from ui_widgets.theme import (
         ACCENT2,
         MUTED,
@@ -31,9 +32,17 @@ def build_app() -> Any:
     from ui_widgets.train_panel import build_train_panel
 
     # ── Main stack (one panel visible at a time) ────────────────────────
-    train_p = build_train_panel()
-    apply_p = build_apply_panel()
-    cluster_p = build_cluster_panel()
+    train_p, train_widgets, train_snap = build_train_panel()
+    apply_p, apply_widgets, apply_snap = build_apply_panel()
+    cluster_p, cluster_widgets, cluster_snap = build_cluster_panel()
+
+    # ── Session save/restore ────────────────────────────────────────────
+    _wire_session(
+        widgets_by_key={**train_widgets, **apply_widgets, **cluster_widgets},
+        snap_fns=(train_snap, apply_snap, cluster_snap),
+        load_last_session=load_last_session,
+        debounced_saver_cls=DebouncedSaver,
+    )
 
     # Last-active workflow panel (0..2) so dialog close returns to it.
     last_panel_index = {"value": 1}
@@ -185,6 +194,55 @@ def build_app() -> Any:
     root.add_class("brt-app")
 
     return w.VBox([inject_css(), root])
+
+
+def _wire_session(
+    *,
+    widgets_by_key: dict,
+    snap_fns: tuple,
+    load_last_session: Any,
+    debounced_saver_cls: Any,
+) -> None:
+    """Restore the last saved snap into ``widgets_by_key`` and wire a
+    ``DebouncedSaver`` that coalesces rapid widget changes into one write.
+
+    Failures are swallowed silently — session state is nice-to-have, not
+    load-bearing.  One bad key (e.g. a legacy snap-key whose widget lost
+    its option) must not derail restore of the remaining values.
+    """
+    try:
+        saved = load_last_session()
+    except Exception:
+        saved = None
+    if isinstance(saved, dict):
+        for key, value in saved.items():
+            widget = widgets_by_key.get(key)
+            if widget is None:
+                continue
+            try:
+                widget.value = value
+            except Exception:  # noqa: BLE001 — TraitError / TypeError / ValueError
+                pass
+
+    def _collect_snap() -> dict:
+        merged: dict = {}
+        for fn in snap_fns:
+            try:
+                merged.update(fn())
+            except Exception:  # noqa: BLE001
+                continue
+        return merged
+
+    saver = debounced_saver_cls(_collect_snap, delay_sec=2.0)
+
+    def _on_change(_change: Any) -> None:
+        saver.schedule()
+
+    for widget in widgets_by_key.values():
+        try:
+            widget.observe(_on_change, names="value")
+        except Exception:  # noqa: BLE001 — widget without `value` trait
+            continue
 
 
 def _hardware_card_html() -> str:

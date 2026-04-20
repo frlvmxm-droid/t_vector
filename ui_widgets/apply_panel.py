@@ -7,6 +7,7 @@ import pathlib
 import tempfile
 import threading
 import traceback
+from collections.abc import Callable
 from typing import Any, Dict, List
 
 from ui_widgets.io import detect_tabular_format, download_link, save_upload_to_tmp
@@ -23,8 +24,12 @@ from ui_widgets.trust_prompt import (
 )
 
 
-def build_apply_panel() -> Any:
-    """Builds the 'Применение' tab. Returns an ipywidgets container."""
+def build_apply_panel() -> tuple[Any, dict[str, Any], Callable[[], dict[str, Any]]]:
+    """Builds the 'Применение' tab.
+
+    Returns ``(vbox, widgets_by_key, snap_fn)`` for session save/restore.
+    Keys are prefixed ``"apply."`` to keep the three panels' snaps disjoint.
+    """
     import ipywidgets as w
 
     # ── Model ──────────────────────────────────────────────────────────
@@ -400,7 +405,29 @@ def build_apply_panel() -> Any:
         ],
         subtitle="Запуск, прогресс, сводка + превью 12 строк.",
     )
-    return w.VBox([sources_card, params_card, llm_card, run_card])
+    # ── Session snap wiring ─────────────────────────────────────────────
+    widgets_by_key: dict[str, Any] = {
+        "apply.model_path": model_path_txt,
+        "apply.use_ensemble": use_ensemble,
+        "apply.ensemble_path": ensemble_path_txt,
+        "apply.ensemble_weight": ensemble_weight,
+        "apply.data_path": data_path_txt,
+        "apply.text_col": text_col,
+        "apply.default_thr": default_thr,
+        "apply.thr_mode": thr_mode,
+        "apply.out_format": out_format,
+        "apply.use_fallback_other": use_fallback_other,
+        "apply.mark_ambiguous": mark_ambiguous,
+        "apply.ambiguity_thr": ambiguity_thr,
+        "apply.llm_rerank": llm_rerank,
+        "apply.llm_top_k": llm_top_k,
+    }
+
+    def snap_fn() -> dict[str, Any]:
+        return {key: widget.value for key, widget in widgets_by_key.items()}
+
+    vbox = w.VBox([sources_card, params_card, llm_card, run_card])
+    return vbox, widgets_by_key, snap_fn
 
 
 # ─── LLM rerank wrapper ────────────────────────────────────────────────
