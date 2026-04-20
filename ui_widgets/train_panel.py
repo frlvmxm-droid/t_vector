@@ -10,39 +10,38 @@ from typing import Any
 
 from ui_widgets.io import detect_tabular_format, download_link, save_upload_to_tmp
 from ui_widgets.progress import ProgressPanel
+from ui_widgets.theme import section_card
 
 
 def build_train_panel() -> Any:
     """Builds the 'Обучение' tab. Returns an ipywidgets container."""
     import ipywidgets as w
 
-    title = w.HTML("<h3 style='margin:6px 0'>📚 Обучение модели</h3>")
-
     # ── Inputs ──────────────────────────────────────────────────────────
     upload = w.FileUpload(
         accept=".xlsx,.csv", multiple=False,
         description="Загрузить XLSX/CSV",
-        layout=w.Layout(width="320px"),
+        layout=w.Layout(width="260px"),
     )
     shared_path = w.Text(
         value="", placeholder="или путь к файлу на сервере (для больших данных)",
-        description="Путь:", layout=w.Layout(width="520px"),
+        description="Путь:", layout=w.Layout(width="440px"),
     )
     text_col = w.Text(value="text", description="Колонка текста:",
-                      layout=w.Layout(width="280px"))
+                      layout=w.Layout(width="240px"))
     label_col = w.Text(value="label", description="Колонка меток:",
-                       layout=w.Layout(width="280px"))
+                       layout=w.Layout(width="240px"))
 
     C = w.FloatLogSlider(value=1.0, base=10, min=-2, max=2, step=0.1,
                          description="C (регуляризация):",
                          style={"description_width": "initial"},
-                         layout=w.Layout(width="420px"))
+                         layout=w.Layout(width="360px"))
     max_iter = w.IntSlider(value=2000, min=200, max=10000, step=100,
                            description="max_iter:",
-                           layout=w.Layout(width="420px"))
+                           layout=w.Layout(width="360px"))
     test_size = w.FloatSlider(value=0.2, min=0.05, max=0.5, step=0.05,
                               description="test_size:",
-                              layout=w.Layout(width="320px"))
+                              layout=w.Layout(width="280px"))
     balanced = w.Checkbox(value=False, description="class_weight=balanced")
     use_smote = w.Checkbox(value=True, description="SMOTE-oversampling")
     calib = w.Dropdown(options=["sigmoid", "isotonic"], value="sigmoid",
@@ -50,13 +49,13 @@ def build_train_panel() -> Any:
     fuzzy_dedup = w.Checkbox(value=False, description="Fuzzy-дедуп")
     fuzzy_thr = w.IntSlider(value=92, min=60, max=100, step=1,
                             description="threshold:",
-                            layout=w.Layout(width="280px"))
+                            layout=w.Layout(width="240px"))
 
     run_btn = w.Button(description="Обучить", button_style="primary",
-                       icon="play", layout=w.Layout(width="160px"))
+                       icon="play", layout=w.Layout(width="180px"))
 
     # ── Outputs ─────────────────────────────────────────────────────────
-    progress = ProgressPanel(log_height="240px")
+    progress = ProgressPanel(log_height="220px")
     metrics_out = w.Output()
     download_box = w.VBox([])
 
@@ -175,22 +174,32 @@ def build_train_panel() -> Any:
 
     run_btn.on_click(_on_click)
 
-    return w.VBox([
-        title,
-        w.HTML("<i>Шаг 1 — выберите файл (Upload для &lt;50&nbsp;МБ, иначе путь).</i>"),
-        w.HBox([upload, shared_path]),
-        w.HBox([text_col, label_col]),
-        w.HTML("<i>Шаг 2 — параметры обучения.</i>"),
-        w.HBox([C, max_iter]),
-        w.HBox([test_size, balanced, use_smote]),
-        w.HBox([calib, fuzzy_dedup, fuzzy_thr]),
-        w.HTML("<i>Шаг 3 — нажмите «Обучить». После завершения появится ссылка на скачивание.</i>"),
-        run_btn,
-        progress.widget,
-        w.HTML("<b>Метрики:</b>"),
-        metrics_out,
-        download_box,
-    ])
+    sources_card = section_card(
+        "ИСТОЧНИКИ",
+        [w.HBox([upload, shared_path]), w.HBox([text_col, label_col])],
+        subtitle="Данные для обучения (XLSX/CSV) и имена колонок.",
+    )
+    params_card = section_card(
+        "ПАРАМЕТРЫ ОБУЧЕНИЯ",
+        [
+            w.HBox([C, max_iter]),
+            w.HBox([test_size, balanced, use_smote]),
+            w.HBox([calib, fuzzy_dedup, fuzzy_thr]),
+        ],
+        subtitle="TF-IDF (word 1–2 + char 3–5) → LinearSVC → CalibratedClassifierCV.",
+    )
+    run_card = section_card(
+        "ОБУЧЕНИЕ",
+        [w.HBox([run_btn]), progress.widget],
+        subtitle="Worker-thread; прогресс стримится в браузер.",
+    )
+    metrics_card = section_card(
+        "МЕТРИКИ И АРТЕФАКТ",
+        [metrics_out, download_box],
+        subtitle="macro-F1 / accuracy / размер сплитов + скачивание model.joblib.",
+    )
+
+    return w.VBox([sources_card, params_card, run_card, metrics_card])
 
 
 # ─── helpers ────────────────────────────────────────────────────────────

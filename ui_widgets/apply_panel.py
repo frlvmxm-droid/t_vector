@@ -10,54 +10,55 @@ from typing import Any
 
 from ui_widgets.io import detect_tabular_format, download_link, save_upload_to_tmp
 from ui_widgets.progress import ProgressPanel
+from ui_widgets.theme import metric_card, metric_row, section_card
 
 
 def build_apply_panel() -> Any:
     """Builds the 'Применение' tab. Returns an ipywidgets container."""
     import ipywidgets as w
 
-    title = w.HTML("<h3 style='margin:6px 0'>🎯 Применение модели</h3>")
-
     # ── Model ──────────────────────────────────────────────────────────
     model_upload = w.FileUpload(
         accept=".joblib", multiple=False,
         description="Загрузить model.joblib",
-        layout=w.Layout(width="320px"),
+        layout=w.Layout(width="260px"),
     )
     model_path_txt = w.Text(
         value="", placeholder="или путь к model.joblib на сервере",
         description="Путь к модели:",
-        layout=w.Layout(width="520px"),
+        layout=w.Layout(width="440px"),
     )
 
     # ── Data ───────────────────────────────────────────────────────────
     data_upload = w.FileUpload(
         accept=".xlsx,.csv", multiple=False,
         description="Данные",
-        layout=w.Layout(width="320px"),
+        layout=w.Layout(width="260px"),
     )
     data_path_txt = w.Text(
         value="", placeholder="или путь к XLSX/CSV на сервере",
         description="Путь к данным:",
-        layout=w.Layout(width="520px"),
+        layout=w.Layout(width="440px"),
     )
     text_col = w.Text(value="text", description="Колонка текста:",
-                      layout=w.Layout(width="280px"))
+                      layout=w.Layout(width="240px"))
 
     # ── Params ─────────────────────────────────────────────────────────
     default_thr = w.FloatSlider(value=0.5, min=0.0, max=1.0, step=0.05,
                                 description="threshold:",
-                                layout=w.Layout(width="320px"))
+                                layout=w.Layout(width="300px"))
     thr_mode = w.Dropdown(options=["review_only", "strict"], value="review_only",
                           description="Режим порога:")
     out_format = w.Dropdown(options=["xlsx", "csv"], value="xlsx",
                             description="Формат:")
 
-    run_btn = w.Button(description="Применить", button_style="primary",
-                       icon="play", layout=w.Layout(width="160px"))
+    run_btn = w.Button(description="▶  Классифицировать",
+                       button_style="primary",
+                       layout=w.Layout(width="220px"))
 
     progress = ProgressPanel(log_height="200px")
     summary_out = w.Output()
+    metric_cards = w.HTML("")
     download_box = w.VBox([])
 
     def _run_apply() -> None:
@@ -108,13 +109,25 @@ def build_apply_panel() -> Any:
             )
 
             summary_out.clear_output()
+            n = len(texts)
+            reviewed = sum(result.needs_review)
+            import numpy as _np
+            confs = _np.asarray(result.confidences, dtype=float)
+            high = int((confs >= 0.85).sum())
             with summary_out:
-                n = len(texts)
-                reviewed = sum(result.needs_review)
                 print(f"Всего строк        : {n}")
                 print(f"needs_review       : {reviewed} ({100 * reviewed / max(n,1):.1f}%)")
                 print(f"classes            : {list(classes)}")
                 print(f"Файл результата    : {out_path.name}")
+
+            metric_cards.value = "<div style='display:flex; gap:12px; margin:4px 0;'>" + "".join([
+                metric_card("ВСЕГО СТРОК", f"{n:,}".replace(",", " "),
+                            "обработано только что"),
+                metric_card("ВЫСОКАЯ УВЕРЕННОСТЬ", f"{high:,}".replace(",", " "),
+                            f"{100 * high / max(n, 1):.0f}% · ≥ 0.85"),
+                metric_card("ТРЕБУЕТ REVIEW", f"{reviewed:,}".replace(",", " "),
+                            f"{100 * reviewed / max(n, 1):.1f}% · < {float(default_thr.value):.2f}"),
+            ]) + "</div>"
 
             download_box.children = (download_link(out_path, f"📥 Скачать {out_path.name}"),)
             progress.mark_done()
@@ -131,26 +144,32 @@ def build_apply_panel() -> Any:
         run_btn.description = "⏳ Применение…"
         progress.reset("Старт…")
         summary_out.clear_output()
+        metric_cards.value = ""
         download_box.children = ()
         threading.Thread(target=_run_apply, daemon=True).start()
 
     run_btn.on_click(_on_click)
 
-    return w.VBox([
-        title,
-        w.HTML("<i>Шаг 1 — модель (result of Train tab or your own .joblib).</i>"),
-        w.HBox([model_upload, model_path_txt]),
-        w.HTML("<i>Шаг 2 — данные для предсказания.</i>"),
-        w.HBox([data_upload, data_path_txt]),
-        text_col,
-        w.HTML("<i>Шаг 3 — параметры порога.</i>"),
-        w.HBox([default_thr, thr_mode, out_format]),
-        run_btn,
-        progress.widget,
-        w.HTML("<b>Сводка:</b>"),
-        summary_out,
-        download_box,
-    ])
+    sources_card = section_card(
+        "ИСТОЧНИКИ",
+        [
+            w.HBox([model_upload, model_path_txt]),
+            w.HBox([data_upload, data_path_txt]),
+            text_col,
+        ],
+        subtitle="Модель и входные данные для пакетной классификации.",
+    )
+    params_card = section_card(
+        "ПОРОГ → REVIEW",
+        [w.HBox([default_thr, thr_mode, out_format])],
+        subtitle="Строки ниже порога уходят в needs_review или strict-reject.",
+    )
+    run_card = section_card(
+        "РЕЗУЛЬТАТЫ КЛАССИФИКАЦИИ",
+        [w.HBox([run_btn, download_box]), progress.widget, metric_cards, summary_out],
+        subtitle="Запуск, прогресс и сводка по предсказаниям.",
+    )
+    return w.VBox([sources_card, params_card, run_card])
 
 
 # ─── helpers ────────────────────────────────────────────────────────────

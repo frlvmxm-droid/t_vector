@@ -10,6 +10,7 @@ from typing import Any, List
 
 from ui_widgets.io import download_link, save_upload_to_tmp
 from ui_widgets.progress import ProgressPanel
+from ui_widgets.theme import metric_card, section_card
 
 
 _SUPPORTED_COMBOS = {
@@ -24,21 +25,19 @@ def build_cluster_panel() -> Any:
     """Builds the 'Кластеризация' tab. Returns an ipywidgets container."""
     import ipywidgets as w
 
-    title = w.HTML("<h3 style='margin:6px 0'>🧩 Кластеризация</h3>")
-
     # ── Inputs ─────────────────────────────────────────────────────────
     upload = w.FileUpload(
         accept=".xlsx,.csv", multiple=True,
         description="Загрузить файлы",
-        layout=w.Layout(width="320px"),
+        layout=w.Layout(width="260px"),
     )
     shared_paths = w.Textarea(
         value="", placeholder="или пути на сервере (по одному на строку)",
         description="Пути:", rows=3,
-        layout=w.Layout(width="520px"),
+        layout=w.Layout(width="440px"),
     )
     text_col = w.Text(value="text", description="Колонка текста:",
-                      layout=w.Layout(width="280px"))
+                      layout=w.Layout(width="240px"))
 
     # ── Algorithm choice ───────────────────────────────────────────────
     vec_mode = w.Dropdown(
@@ -50,7 +49,7 @@ def build_cluster_panel() -> Any:
         ],
         value="tfidf",
         description="Векторизация:",
-        layout=w.Layout(width="520px"),
+        layout=w.Layout(width="440px"),
     )
     algo = w.Dropdown(
         options=[
@@ -61,37 +60,38 @@ def build_cluster_panel() -> Any:
         ],
         value="kmeans",
         description="Алгоритм:",
-        layout=w.Layout(width="420px"),
+        layout=w.Layout(width="360px"),
     )
     k_clusters = w.IntSlider(value=8, min=2, max=100, step=1,
                              description="K:",
-                             layout=w.Layout(width="420px"))
+                             layout=w.Layout(width="360px"))
 
     # SBERT-specific
     sbert_model = w.Text(
         value="cointegrated/rubert-tiny2",
         description="SBERT model:",
-        layout=w.Layout(width="520px"),
+        layout=w.Layout(width="440px"),
     )
     sbert_model2 = w.Text(
         value="",
         placeholder="второй SBERT (только для ensemble)",
         description="SBERT model #2:",
-        layout=w.Layout(width="520px"),
+        layout=w.Layout(width="440px"),
     )
     # Combo-specific
     combo_alpha = w.FloatSlider(value=0.5, min=0.0, max=1.0, step=0.05,
                                 description="combo α:",
-                                layout=w.Layout(width="320px"))
+                                layout=w.Layout(width="280px"))
     combo_svd_dim = w.IntSlider(value=200, min=50, max=500, step=50,
                                 description="SVD dim:",
-                                layout=w.Layout(width="320px"))
+                                layout=w.Layout(width="280px"))
 
-    run_btn = w.Button(description="Кластеризовать", button_style="primary",
-                       icon="play", layout=w.Layout(width="200px"))
+    run_btn = w.Button(description="▶  Кластеризовать", button_style="primary",
+                       layout=w.Layout(width="220px"))
 
-    progress = ProgressPanel(log_height="240px")
+    progress = ProgressPanel(log_height="220px")
     summary_out = w.Output()
+    metric_cards = w.HTML("")
     download_box = w.VBox([])
 
     # ── Dynamic visibility ─────────────────────────────────────────────
@@ -171,6 +171,15 @@ def build_cluster_panel() -> Any:
                 print(f"Шум (noise)        : {result.n_noise}")
                 print(f"Файл результата    : {out_csv.name}")
 
+            metric_cards.value = "<div style='display:flex; gap:12px; margin:4px 0;'>" + "".join([
+                metric_card("КЛАСТЕРОВ", str(result.n_clusters),
+                            f"{vec_mode.value} + {algo.value}"),
+                metric_card("ШУМ (NOISE)", str(result.n_noise),
+                            "только для HDBSCAN"),
+                metric_card("ВХОДНЫХ ФАЙЛОВ", str(len(paths)),
+                            f"колонка: {text_col.value!r}"),
+            ]) + "</div>"
+
             download_box.children = (download_link(out_csv, f"📥 Скачать {out_csv.name}"),)
             progress.mark_done()
         except Exception as exc:  # noqa: BLE001 — UI entry point
@@ -186,39 +195,46 @@ def build_cluster_panel() -> Any:
         run_btn.description = "⏳ Кластеризация…"
         progress.reset("Старт…")
         summary_out.clear_output()
+        metric_cards.value = ""
         download_box.children = ()
         threading.Thread(target=_run_clustering, daemon=True).start()
 
     run_btn.on_click(_on_click)
 
     warn_html = w.HTML(
-        "<div style='color:#a66;font-size:0.92em'>"
-        "⚠️ Поддержаны только комбо: "
-        "tfidf+{kmeans,agglo,lda,hdbscan}, sbert+kmeans, "
-        "combo+kmeans, ensemble+kmeans. Для BERTopic / SetFit / "
-        "FASTopic используйте CLI с <code>--allow-skeleton</code> "
-        "или desktop UI."
+        "<div style='color:#f0b429;font-size:0.88em;margin-top:6px'>"
+        "⚠ Поддержаны только комбо: "
+        "<code>tfidf+{kmeans,agglo,lda,hdbscan}</code>, "
+        "<code>sbert+kmeans</code>, "
+        "<code>combo+kmeans</code>, <code>ensemble+kmeans</code>. "
+        "Для BERTopic / SetFit / FASTopic используйте CLI с "
+        "<code>--allow-skeleton</code> или desktop UI."
         "</div>"
     )
 
-    return w.VBox([
-        title,
-        w.HTML("<i>Шаг 1 — входные файлы (можно несколько).</i>"),
-        w.HBox([upload, shared_paths]),
-        text_col,
-        w.HTML("<i>Шаг 2 — выбор алгоритма.</i>"),
-        w.HBox([vec_mode, algo]),
-        k_clusters,
-        sbert_model,
-        sbert_model2,
-        w.HBox([combo_alpha, combo_svd_dim]),
-        warn_html,
-        run_btn,
-        progress.widget,
-        w.HTML("<b>Результаты:</b>"),
-        summary_out,
-        download_box,
-    ])
+    sources_card = section_card(
+        "ИСТОЧНИКИ",
+        [w.HBox([upload, shared_paths]), text_col],
+        subtitle="Один или несколько XLSX/CSV + колонка текста.",
+    )
+    algo_card = section_card(
+        "АЛГОРИТМ",
+        [
+            w.HBox([vec_mode, algo]),
+            k_clusters,
+            sbert_model,
+            sbert_model2,
+            w.HBox([combo_alpha, combo_svd_dim]),
+            warn_html,
+        ],
+        subtitle="Векторизация → кластеризация.",
+    )
+    run_card = section_card(
+        "РЕЗУЛЬТАТЫ КЛАСТЕРИЗАЦИИ",
+        [w.HBox([run_btn, download_box]), progress.widget, metric_cards, summary_out],
+        subtitle="Запуск, прогресс и сводка по кластерам.",
+    )
+    return w.VBox([sources_card, algo_card, run_card])
 
 
 # ─── helpers ────────────────────────────────────────────────────────────
