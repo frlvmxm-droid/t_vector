@@ -120,6 +120,12 @@ def _manual_validate_payload(schema_name: str, payload: dict[str, Any]) -> dict[
         out.setdefault("merge_similar_clusters", False)
         out.setdefault("merge_threshold", 0.85)
         out.setdefault("n_repr_examples", 5)
+        out.setdefault("hdbscan_reclust", False)
+        out.setdefault("compute_quality_metrics", False)
+        out.setdefault("umap_n_components", 10)
+        out.setdefault("umap_n_neighbors", 15)
+        out.setdefault("umap_min_dist", 0.1)
+        out.setdefault("umap_metric", "cosine")
     else:
         raise ValueError(f"Неизвестная схема валидации: {schema_name}")
     return out
@@ -184,6 +190,12 @@ if _BaseModel is not None:
         merge_similar_clusters: bool = False
         merge_threshold: float = _Field(0.85, ge=0.0, le=1.0, allow_inf_nan=False)
         n_repr_examples: int = _Field(5, ge=1, le=100)
+        hdbscan_reclust: bool = False
+        compute_quality_metrics: bool = False
+        umap_n_components: int = _Field(10, ge=2, le=512)
+        umap_n_neighbors: int = _Field(15, ge=2, le=500)
+        umap_min_dist: float = _Field(0.1, ge=0.0, le=1.0, allow_inf_nan=False)
+        umap_metric: str = _Field("cosine", min_length=1)
 else:
     _TrainSchema = _ApplySchema = _ClusterSchema = None
 

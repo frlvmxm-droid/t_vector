@@ -1,51 +1,51 @@
-# -*- coding: utf-8 -*-
 """Чистые pipeline-утилиты кластеризации (без tkinter-зависимостей)."""
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Mapping, List, Optional, Sequence, TypedDict
+from typing import TypedDict
 
 from text_utils import parse_dialog_roles
 
 
 @dataclass(frozen=True)
 class ClusterRoleContext:
-    cluster_snap: "ClusterRoleSnapshot"
+    cluster_snap: ClusterRoleSnapshot
     role_label: str
     ignore_chatbot_label: str
 
 
 @dataclass(frozen=True)
 class PreparedInputs:
-    files_snapshot: List[str]
-    snap: "ClusterSnapshot"
+    files_snapshot: list[str]
+    snap: ClusterSnapshot
     role_context: ClusterRoleContext
 
 
 @dataclass(frozen=True)
 class VectorPack:
     prepared: PreparedInputs
-    vectors: Optional[object] = None
-    meta: Optional[dict[str, object]] = None
+    vectors: object | None = None
+    meta: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)
 class ClusterResult:
     vectors: VectorPack
-    labels: Optional[object] = None
-    meta: Optional[dict[str, object]] = None
+    labels: object | None = None
+    meta: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)
 class PostprocessResult:
     result: ClusterResult
-    payload: Optional["PostprocessPayload"] = None
+    payload: PostprocessPayload | None = None
 
 
 @dataclass(frozen=True)
 class ExportSummary:
     postprocessed: PostprocessResult
-    outputs: Optional["ExportOutputs"] = None
+    outputs: ExportOutputs | None = None
 
 
 class ClusterSnapshot(TypedDict, total=False):
@@ -77,8 +77,8 @@ class PostprocessPayload(TypedDict, total=False):
     snap: ClusterSnapshot
     # Wave 3a slice (TF-IDF + KMeans only):
     cluster_sizes: dict[int, int]
-    cluster_keywords: dict[int, List[str]]
-    texts: List[str]
+    cluster_keywords: dict[int, list[str]]
+    texts: list[str]
     labels: object  # numpy ndarray; kept as object to avoid hard numpy dep
 
 
@@ -176,13 +176,13 @@ def build_t5_source_text(
     header: Sequence[str],
     snap: Mapping[str, object],
     cluster_snap: Mapping[str, object],
-    header_index: Optional[dict[str, int]] = None,
+    header_index: dict[str, int] | None = None,
 ) -> str:
     """Собирает текст строки для T5-суммаризации из call/chat столбцов."""
     index_map = header_index or {str(h): i for i, h in enumerate(header)}
     norm_index_map = {str(k).strip().lower(): v for k, v in index_map.items()}
 
-    resolved_idx: dict[str, Optional[int]] = {}
+    resolved_idx: dict[str, int | None] = {}
     for col_key in ("call_col", "chat_col"):
         col_name_obj = snap.get(col_key, "")
         col_name = col_name_obj if isinstance(col_name_obj, str) else ""
@@ -194,11 +194,11 @@ def build_t5_source_text(
             idx = norm_index_map.get(col_name.strip().lower())
         resolved_idx[col_key] = idx
 
-    def _get(col_key: str) -> Optional[object]:
+    def _get(col_key: str) -> object | None:
         idx = resolved_idx.get(col_key)
         return row_vals[idx] if (idx is not None and idx < len(row_vals)) else None
 
-    parts: List[str] = []
+    parts: list[str] = []
     for col_key in ("call_col", "chat_col"):
         raw = _get(col_key)
         if raw:
@@ -210,7 +210,7 @@ def build_t5_source_text(
     return " ".join(parts)[:3000]
 
 
-def prepare_inputs(files_snapshot: List[str], snap: Mapping[str, object]) -> PreparedInputs:
+def prepare_inputs(files_snapshot: list[str], snap: Mapping[str, object]) -> PreparedInputs:
     """Stage 1: подготовка входов pipeline (без вычислительных этапов)."""
     role_context = build_cluster_role_context(snap)
     return PreparedInputs(
@@ -280,13 +280,13 @@ def _require_supported_combo(snap: Mapping[str, object]) -> None:
 # These remain reachable through the Tk path until further slices land.
 
 
-def _read_texts(files_snapshot: Sequence[str], text_col: str) -> List[str]:
+def _read_texts(files_snapshot: Sequence[str], text_col: str) -> list[str]:
     """Read ``text_col`` from each file in ``files_snapshot``, concatenated."""
     from pathlib import Path as _Path
 
     from excel_utils import open_tabular
 
-    texts: List[str] = []
+    texts: list[str] = []
     for raw_path in files_snapshot:
         path = _Path(raw_path)
         with open_tabular(path) as rows:
@@ -542,6 +542,29 @@ def build_vectors(prepared: PreparedInputs, snap: Mapping[str, object]) -> Vecto
         clustering_matrix = tfidf_matrix
         clustering_vectorizer = tfidf_vec
 
+    # Opt-in UMAP reduction for dense vectorisations (SBERT/combo/ensemble).
+    # Gated by snap['use_umap']; TF-IDF stays sparse to preserve downstream
+    # keyword extraction. Fallback is silent inside reduce_with_umap.
+    umap_meta: dict[str, object] = {}
+    if snap.get("use_umap") and vec_mode in ("sbert", "combo", "ensemble"):
+        from cluster_umap_service import reduce_with_umap
+
+        n_comp = int(snap.get("umap_n_components", 10) or 10)
+        n_neigh = int(snap.get("umap_n_neighbors", 15) or 15)
+        min_dist = float(snap.get("umap_min_dist", 0.1) or 0.1)
+        metric = str(snap.get("umap_metric", "cosine") or "cosine")
+        seed_u_obj = snap.get("random_state", 42)
+        seed_u = int(seed_u_obj) if isinstance(seed_u_obj, (int, float)) else 42
+        clustering_matrix = reduce_with_umap(
+            clustering_matrix,
+            n_components=n_comp,
+            n_neighbors=n_neigh,
+            min_dist=min_dist,
+            metric=metric,
+            random_state=seed_u,
+        )
+        umap_meta["umap_applied"] = True
+
     meta: dict[str, object] = {
         "vectorizer": clustering_vectorizer,
         "keyword_vectorizer": tfidf_vec,
@@ -549,6 +572,7 @@ def build_vectors(prepared: PreparedInputs, snap: Mapping[str, object]) -> Vecto
         "texts": texts,
         "min_df": min_df,
     }
+    meta.update(umap_meta)
     if vec_mode == "ensemble":
         # run_clustering reads meta['ensemble_labels'] and skips the
         # kmeans refit (the selector above already fit + scored three).
@@ -729,6 +753,13 @@ def run_clustering(vectors: VectorPack, snap: Mapping[str, object]) -> ClusterRe
         model = _HDBSCAN_cls(**hdb_kwargs)
         labels = model.fit_predict(dense)  # type: ignore[attr-defined]
         labels_arr = _np.asarray(labels)
+        # Optional noise-reassignment: gated by snap['hdbscan_reclust'].
+        # Noise points (label=-1) get labelled by the nearest centroid.
+        if snap.get("hdbscan_reclust") and (labels_arr < 0).any():
+            from cluster_hdbscan_reclust_service import reassign_noise
+
+            labels = reassign_noise(labels_arr, dense)
+            labels_arr = _np.asarray(labels)
         valid = labels_arr[labels_arr >= 0]
         k = int(valid.max()) + 1 if valid.size else 0
     else:
@@ -744,13 +775,13 @@ def run_clustering(vectors: VectorPack, snap: Mapping[str, object]) -> ClusterRe
 
 def _cluster_keywords(
     matrix: object, labels: object, vectorizer: object, *, top_n: int = 5
-) -> dict[int, List[str]]:
+) -> dict[int, list[str]]:
     """Top-N centroid keywords per cluster (mean TF-IDF weight)."""
     import numpy as _np
 
     feature_names = vectorizer.get_feature_names_out()  # type: ignore[attr-defined]
     label_arr = _np.asarray(labels)
-    out: dict[int, List[str]] = {}
+    out: dict[int, list[str]] = {}
     for cid in _np.unique(label_arr):
         if cid < 0:
             continue
@@ -782,6 +813,23 @@ def postprocess_clusters(
     import numpy as _np
 
     labels = _np.asarray(result.labels)
+    vec_meta = result.vectors.meta or {}
+    merge_info: dict[str, object] | None = None
+    # Opt-in merge-similar-clusters pass: reuses ml_diagnostics. Runs on
+    # the clustering matrix (not the TF-IDF one) so similarity matches
+    # the representation used for the fit.
+    if snap.get("merge_similar_clusters"):
+        try:
+            from ml_diagnostics import merge_similar_clusters as _merge_similar
+
+            threshold = float(snap.get("merge_threshold", 0.85) or 0.85)
+            merged_labels, merge_info = _merge_similar(
+                labels, result.vectors.vectors, threshold=threshold,
+            )
+            labels = _np.asarray(merged_labels)
+        except Exception:  # noqa: BLE001 — degrade silently on diagnostic errors
+            merge_info = None
+
     sizes: dict[int, int] = {
         int(cid): int(count)
         for cid, count in zip(*_np.unique(labels, return_counts=True))
@@ -789,7 +837,6 @@ def postprocess_clusters(
     # Keyword extraction prefers the TF-IDF matrix when one exists (LDA
     # fits on counts but TF-IDF-weighted keywords are more informative —
     # matching run_cluster()'s behavior at line 3714 / 2555).
-    vec_meta = result.vectors.meta or {}
     kw_matrix = vec_meta.get("keyword_matrix", result.vectors.vectors)
     kw_vectorizer = vec_meta.get("keyword_vectorizer", vec_meta["vectorizer"])
     keywords = _cluster_keywords(kw_matrix, labels, kw_vectorizer)
@@ -801,6 +848,8 @@ def postprocess_clusters(
         "texts": vec_meta.get("texts", []),
         "labels": labels,
     }
+    if merge_info is not None:
+        payload["merge_info"] = merge_info
     return PostprocessResult(result=result, payload=payload)  # type: ignore[arg-type]
 
 
@@ -833,7 +882,7 @@ def export_cluster_outputs(
     payload = postprocessed.payload  # type: ignore[assignment]
     texts: Sequence[str] = payload["texts"]  # type: ignore[index]
     labels = payload["labels"]  # type: ignore[index]
-    keywords: dict[int, List[str]] = payload["cluster_keywords"]  # type: ignore[index]
+    keywords: dict[int, list[str]] = payload["cluster_keywords"]  # type: ignore[index]
 
     import csv as _csv
 
@@ -852,5 +901,16 @@ def export_cluster_outputs(
         "out_path": str(out_path),
         "rows_written": written,
     }
+    # Opt-in quality metrics: silhouette / CH / DBI appended to outputs so
+    # the UI can surface them. The computation is guarded inside the service
+    # so missing sklearn or single-cluster cases degrade silently.
+    if snap.get("compute_quality_metrics"):
+        from cluster_quality_service import compute_quality
+
+        vectors_for_quality = postprocessed.result.vectors.vectors
+        quality = compute_quality(vectors_for_quality, labels)
+        outputs["quality_metrics"] = quality
+    merge_info = payload.get("merge_info")  # type: ignore[call-overload]
+    if merge_info is not None:
+        outputs["merge_info"] = merge_info
     return ExportSummary(postprocessed=postprocessed, outputs=outputs)  # type: ignore[arg-type]
-    raise NotImplementedError(_STAGES_NOT_PORTED_MSG.format(name="export_cluster_outputs"))
