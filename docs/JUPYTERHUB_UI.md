@@ -190,15 +190,46 @@ and are surfaced as a warning banner in the tab.
 
 ---
 
-## Known limitations (MVP)
+## Advanced features (Phases 8–11)
+
+| Tab | Feature | How to use |
+|---|---|---|
+| Train | Auto-profile (Smart / Strict / Manual) | Dropdown swaps the underlying defaults for SMOTE / calibration / oversampling. |
+| Train | SBERT device override | Dropdown picks `auto` / `cpu` / `cuda` / `mps`. |
+| Train | Advanced Accordion | Optuna, K-fold, Cleanlab, label smoothing, hard-negatives, field-dropout. Default collapsed. |
+| Apply | Header chips | Trust-check, macro-F1, train/test rows, classes, file format, encoding — populated after `Inspect` on the bundle. |
+| Apply | Per-class thresholds | Editable sliders, seeded from `bundle['per_class_thresholds']`. |
+| Apply | Ensemble | Upload a second `.joblib` + weight slider; predict averages `predict_proba`. |
+| Apply | LLM-rerank | Switch + top-K slider; opt-in, requires `BRT_LLM_API_KEY` (or `BRT_LLM_PROVIDER=offline`). |
+| Cluster | Auto-K | `cluster_auto_k=True` runs `auto_k_service.select_k` (silhouette / calinski / elbow) before KMeans. |
+| Cluster | LLM-naming | `use_llm_naming=True` uses `cluster_naming_service.name_clusters_with_llm` after postprocess. |
+| Cluster | T5 summary | `use_t5_summary=True` uses `cluster_summarization_service.summarize_clusters_with_t5`; gracefully skipped without `transformers`. |
+| Cluster | UMAP / HDBSCAN / LDA knobs | All exposed in the panel; conditional cards show only when the algo / vec_mode is selected. |
+| Sidebar | КОНТЕКСТ → 🕘 История | Shows the last 20 records from `~/.classification_tool/experiments.jsonl`. |
+| Sidebar | КОНТЕКСТ → 📦 Артефакты | Recursive `.joblib` scan of `~/.classification_tool/`, with file size + SHA-256 prefix. |
+| Sidebar | КОНТЕКСТ → ⚙️ Настройки | Read-only dependency check + LLM environment variable status. |
+
+The Auto-K / LLM-naming / T5 services are pure-Python modules
+(`auto_k_service.py`, `cluster_naming_service.py`,
+`cluster_summarization_service.py`) — they live next to the headless
+service layer and have unit tests in `tests/test_*_service.py`. The
+desktop closures in `app_cluster.py` are unchanged; the new modules are
+the canonical implementation for the web-UI / CLI.
+
+---
+
+## Known limitations
 
 - No cancel button — the action button stays disabled until the
   worker finishes. Cancelation requires a `cancel_event` hook in the
   service layer (planned follow-up).
 - No session save/restore (snap.json round-trip).
-- No LLM cluster naming, T5 summarization, Plotly / UMAP plots —
-  those helpers live inside broken closures in `app_cluster.py` and
-  are exposed only by the desktop UI.
+- LLM-naming requires either `BRT_LLM_PROVIDER=offline` (deterministic
+  CI stub from ADR-0004) or a real provider API key in the kernel
+  environment. The dialog's Settings tab indicates which keys are set.
+- T5 summarization needs ~1 GB of model weights on first call. Pre-seed
+  via `HF_HOME` or it will download on the first cluster run.
+- Plotly / Cleanlab visualisations are still desktop-only.
 - No GPU contention guard on multi-user hubs — rely on JupyterHub
   resource limits.
 

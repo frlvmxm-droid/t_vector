@@ -18,6 +18,11 @@ def build_app() -> Any:
 
     from ui_widgets.apply_panel import build_apply_panel
     from ui_widgets.cluster_panel import build_cluster_panel
+    from ui_widgets.dialogs import (
+        build_artifacts_dialog,
+        build_history_dialog,
+        build_settings_dialog,
+    )
     from ui_widgets.theme import (
         ACCENT2, MUTED, inject_css, status_badge,
     )
@@ -27,8 +32,28 @@ def build_app() -> Any:
     train_p = build_train_panel()
     apply_p = build_apply_panel()
     cluster_p = build_cluster_panel()
+
+    # Last-active workflow panel (0..2) so dialog close returns to it.
+    last_panel_index = {"value": 1}
+
+    def _show_panel(index: int) -> None:
+        last_panel_index["value"] = index
+        stack.selected_index = index
+        for i, b in enumerate(nav_buttons):
+            b.button_style = "primary" if i == index else ""
+        for b in context_buttons:
+            b.button_style = ""
+        _render_header_title(index)
+
+    def _close_dialog() -> None:
+        _show_panel(last_panel_index["value"])
+
+    history_d = build_history_dialog(_close_dialog)
+    artifacts_d = build_artifacts_dialog(_close_dialog)
+    settings_d = build_settings_dialog(_close_dialog)
+
     stack = w.Stack(
-        children=[train_p, apply_p, cluster_p],
+        children=[train_p, apply_p, cluster_p, history_d, artifacts_d, settings_d],
         selected_index=1,  # default to «Классификация» — matches screenshot
     )
 
@@ -67,30 +92,38 @@ def build_app() -> Any:
         )
 
     def _select(index: int) -> None:
-        stack.selected_index = index
-        for i, b in enumerate(nav_buttons):
-            b.button_style = "primary" if i == index else ""
-        _render_header_title(index)
+        _show_panel(index)
 
     for i, btn in enumerate(nav_buttons):
         btn.on_click(lambda _b, _i=i: _select(_i))
-    _select(1)  # highlight «Классификация» initially
 
+    # Sidebar КОНТЕКСТ buttons — open dialogs in slots 3/4/5 of the stack.
     context_items = [
-        ("🕘", "История экспериментов"),
-        ("📦", "Артефакты моделей"),
-        ("⚙️", "Настройки · LLM keys"),
+        ("🕘", "История экспериментов", 3),
+        ("📦", "Артефакты моделей",     4),
+        ("⚙️", "Настройки · LLM keys",  5),
     ]
     context_buttons: List[Any] = []
-    for icon, label in context_items:
+    for icon, label, _slot in context_items:
         btn = w.Button(
             description=f"{icon}  {label}",
-            disabled=True,
-            tooltip="Пока не реализовано в веб-UI (см. desktop)",
             layout=w.Layout(width="96%", margin="2px 0",
                             display="flex", justify_content="flex-start"),
         )
         context_buttons.append(btn)
+
+    def _open_dialog(slot: int, btn: Any) -> None:
+        stack.selected_index = slot
+        for b in nav_buttons:
+            b.button_style = ""
+        for b in context_buttons:
+            b.button_style = ""
+        btn.button_style = "primary"
+
+    for (_icon, _label, slot), btn in zip(context_items, context_buttons):
+        btn.on_click(lambda _b, _slot=slot, _btn=btn: _open_dialog(_slot, _btn))
+
+    _select(1)  # highlight «Классификация» initially
 
     brand_html = w.HTML(
         "<div class='brt-brand'>"
