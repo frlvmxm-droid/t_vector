@@ -15,6 +15,12 @@ from ui_widgets.progress import ProgressPanel
 from ui_widgets.theme import (
     badge, header_chip_row, metric_card, section_card,
 )
+from ui_widgets.trust_prompt import (
+    TrustDenied,
+    build_confirm_prompt,
+    ensure_trusted_model_path_interactive,
+    get_trust_store,
+)
 
 
 def build_apply_panel() -> Any:
@@ -125,6 +131,23 @@ def build_apply_panel() -> Any:
     download_box = w.VBox([])
     preview_box = w.VBox([])
 
+    # ── Trust prompt (shown only when a new .joblib is loaded) ─────────
+    trust_host, confirm_trust = build_confirm_prompt()
+
+    def _trusted_load(path: pathlib.Path) -> dict:
+        """Wraps load_model_artifact with trust-store verification."""
+        from model_loader import load_model_artifact
+        ensure_trusted_model_path_interactive(
+            path, log_cb=progress.log, confirm_cb=confirm_trust,
+        )
+        store = get_trust_store()
+        return load_model_artifact(
+            str(path),
+            precomputed_sha256=store.get_hash(str(path)),
+            require_trusted=True,
+            trusted_paths=store.trusted_canonical_paths(),
+        )
+
     # ── Bundle inspection (populates per-class + header chips) ─────────
     def _inspect_model(*_a: Any) -> None:
         try:
@@ -134,13 +157,14 @@ def build_apply_panel() -> Any:
             if model_path is None:
                 progress.log("ℹ️  укажите модель для осмотра")
                 return
-            from model_loader import load_model_artifact
             from apply_prediction_service import validate_apply_bundle
-            bundle = load_model_artifact(str(model_path))
+            bundle = _trusted_load(model_path)
             validate_apply_bundle(bundle)
             _refresh_header_chips(bundle, data_path=None)
             _rebuild_per_class(bundle)
             progress.log(f"  осмотр модели: {model_path.name} ok")
+        except TrustDenied as exc:
+            progress.log(f"🛑 осмотр отменён: {exc}")
         except Exception as exc:  # noqa: BLE001
             progress.log(f"❌ осмотр модели: {exc}")
 
@@ -210,11 +234,10 @@ def build_apply_panel() -> Any:
                 return
 
             progress.update(0.05, "Загрузка модели…")
-            from model_loader import load_model_artifact
             from apply_prediction_service import (
                 predict_with_thresholds, validate_apply_bundle,
             )
-            bundle = load_model_artifact(str(model_path))
+            bundle = _trusted_load(model_path)
             validate_apply_bundle(bundle)
             _refresh_header_chips(bundle, data_path=data_path)
             progress.log(f"  модель: {model_path.name}")
@@ -226,7 +249,7 @@ def build_apply_panel() -> Any:
                     ensemble_upload, ensemble_path_txt.value, ".joblib",
                 )
                 if m2_path is not None:
-                    bundle2 = load_model_artifact(str(m2_path))
+                    bundle2 = _trusted_load(m2_path)
                     validate_apply_bundle(bundle2)
                     progress.log(f"  модель #2: {m2_path.name}")
 
@@ -317,6 +340,9 @@ def build_apply_panel() -> Any:
                 ),
             )
             progress.mark_done()
+        except TrustDenied as exc:
+            progress.log(f"🛑 загрузка отменена: {exc}")
+            progress.mark_error("Отменено пользователем")
         except Exception as exc:  # noqa: BLE001 — UI entry point
             progress.log(f"❌ {exc}")
             progress.log(traceback.format_exc())
@@ -345,6 +371,7 @@ def build_apply_panel() -> Any:
             w.HBox([data_upload, data_path_txt]),
             text_col,
             header_chips,
+            trust_host,
         ],
         subtitle="Модель + (опц.) 2-я модель-ансамбль + входные данные.",
     )
