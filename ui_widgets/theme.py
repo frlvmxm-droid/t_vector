@@ -254,6 +254,103 @@ _CSS = f"""
     color: {FG} !important;
     border-radius: 4px;
   }}
+
+  /* ── Phase 7: header-chip row, predictions table, badges, accordion ── */
+  .brt-header-chip-row {{
+    display: flex; flex-wrap: wrap; gap: 6px;
+    padding: 0 14px 8px 18px;
+    background: {BG};
+    border-bottom: 1px solid {BORDER2};
+  }}
+  .brt-header-chip-row .brt-chip {{ margin: 0; }}
+
+  .brt-header-actions {{
+    display: flex; align-items: center; gap: 8px;
+  }}
+
+  .brt-overlay {{
+    background: {PANEL};
+    border: 1px solid {BORDER2};
+    border-radius: 8px;
+    padding: 14px 16px;
+    margin: 10px 14px;
+    min-height: 480px;
+  }}
+  .brt-overlay-title {{
+    color: {ACCENT2}; font-weight: 700; font-size: 13px;
+    letter-spacing: 1.2px; text-transform: uppercase;
+    margin-bottom: 10px;
+  }}
+
+  .brt-pred-table {{
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+    color: {FG};
+    background: {PANEL2};
+    border-radius: 4px;
+    overflow: hidden;
+    margin-top: 6px;
+  }}
+  .brt-pred-table thead th {{
+    background: {ENTRY_BG};
+    color: {MUTED};
+    font-weight: 700; text-transform: uppercase;
+    font-size: 10px; letter-spacing: 1px;
+    padding: 8px 10px;
+    border-bottom: 1px solid {BORDER2};
+    text-align: left;
+  }}
+  .brt-pred-table tbody td {{
+    padding: 7px 10px;
+    border-bottom: 1px solid {BORDER2};
+    vertical-align: middle;
+  }}
+  .brt-pred-table tbody tr:hover {{
+    background: {BORDER2};
+  }}
+  .brt-pred-text {{
+    max-width: 520px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    color: {FG};
+  }}
+
+  .brt-badge {{
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 10px; font-weight: 700;
+    letter-spacing: 0.5px;
+    border: 1px solid {BORDER};
+    background: {ENTRY_BG};
+    color: {FG};
+  }}
+  .brt-badge-ok   {{ color: {SUCCESS}; border-color: {ACCENT3}; background: rgba(29,233,182,0.08); }}
+  .brt-badge-warn {{ color: {WARNING}; border-color: #7a5a15; background: rgba(240,180,41,0.08); }}
+  .brt-badge-err  {{ color: {ERROR};   border-color: #7a1f1f; background: rgba(255,82,82,0.08); }}
+  .brt-badge-info {{ color: {ACCENT2}; border-color: {ACCENT3}; background: rgba(29,233,182,0.06); }}
+
+  .brt-filter-tabs {{
+    display: flex; gap: 6px; margin: 6px 0 4px 0;
+    border-bottom: 1px solid {BORDER2}; padding-bottom: 6px;
+  }}
+
+  /* override jupyter accordion to match dark-teal */
+  .jupyter-widgets.widget-accordion .p-Collapse-header,
+  .jupyter-widgets.widget-accordion .lm-Collapse-header {{
+    background: {PANEL2} !important;
+    color: {ACCENT2} !important;
+    border: 1px solid {BORDER2} !important;
+    font-weight: 700; letter-spacing: 1.0px; text-transform: uppercase;
+    font-size: 11px;
+  }}
+  .jupyter-widgets.widget-accordion .p-Collapse-contents,
+  .jupyter-widgets.widget-accordion .lm-Collapse-contents {{
+    background: {PANEL} !important;
+    color: {FG} !important;
+    border: 1px solid {BORDER2} !important;
+    border-top: none !important;
+  }}
 </style>
 """
 
@@ -331,3 +428,30 @@ def section_card(title: str, children: Iterable[Any], subtitle: str = "") -> Any
 
 def status_badge(text: str = "idle") -> str:
     return f"<span class='brt-status'>{text}</span>"
+
+
+def badge(text: str, kind: str = "ok") -> str:
+    """HTML snippet for a small pill badge.
+
+    ``kind`` ∈ ``{'ok', 'warn', 'err', 'info', 'default'}``.
+    """
+    cls = "brt-badge" if kind == "default" else f"brt-badge brt-badge-{kind}"
+    return f"<span class='{cls}'>{text}</span>"
+
+
+def header_chip_row(chip_html: Iterable[str]) -> Any:
+    """Container for a horizontal row of chip badges (header strip)."""
+    import ipywidgets as w
+    inner = "".join(chip_html)
+    return w.HTML(f"<div class='brt-header-chip-row'>{inner}</div>")
+
+
+def overlay_card(title: str, body_html: str) -> Any:
+    """Full-width card used for sidebar context dialogs (history/artifacts/settings)."""
+    import ipywidgets as w
+    return w.HTML(
+        f"<div class='brt-overlay'>"
+        f"<div class='brt-overlay-title'>{title}</div>"
+        f"{body_html}"
+        f"</div>"
+    )

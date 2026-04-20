@@ -48,10 +48,29 @@ def build_app() -> Any:
         )
         nav_buttons.append(btn)
 
+    # Header title + subtitle reflect the active panel
+    panel_titles = (
+        ("Обучение",      "ml model training · TF-IDF + LinearSVC"),
+        ("Классификация", "batch prediction · per-class thresholds"),
+        ("Кластеризация", "unsupervised · TF-IDF / SBERT / Combo / Ensemble"),
+    )
+    header_title_html = w.HTML("")
+
+    def _render_header_title(index: int) -> None:
+        title, sub = panel_titles[index]
+        header_title_html.value = (
+            "<div class='brt-header-title'>"
+            f"<span style='color:{ACCENT2};font-weight:800'>BankReasonTrainer</span>"
+            f"<span class='muted'> — {title}</span>"
+            f"<span style='color:{MUTED}'>  ·  {sub}</span>"
+            "</div>"
+        )
+
     def _select(index: int) -> None:
         stack.selected_index = index
         for i, b in enumerate(nav_buttons):
             b.button_style = "primary" if i == index else ""
+        _render_header_title(index)
 
     for i, btn in enumerate(nav_buttons):
         btn.on_click(lambda _b, _i=i: _select(_i))
@@ -104,16 +123,20 @@ def build_app() -> Any:
     sidebar.add_class("brt-sidebar")
 
     # ── Main area: header strip + stack ─────────────────────────────────
-    header = w.HTML(
-        "<div class='brt-header'>"
-        "<div class='brt-header-title'>"
-        f"<span style='color:{ACCENT2};font-weight:800'>BankReasonTrainer</span>"
-        f"<span class='muted'> — v3.4.1 — </span>"
-        f"<span style='color:{MUTED}'>model/baseline_v3_854.joblib</span>"
-        "</div>"
-        f"{status_badge('idle')}"
-        "</div>"
+    status_html = w.HTML(
+        f"<div class='brt-header-actions'>{status_badge('idle')}</div>"
     )
+    header = w.HBox(
+        [header_title_html, status_html],
+        layout=w.Layout(
+            justify_content="space-between",
+            align_items="center",
+            padding="10px 14px 12px 18px",
+            border_bottom=f"1px solid #112d20",
+            width="100%",
+        ),
+    )
+    header.add_class("brt-header")
     main = w.VBox(
         [header, stack],
         layout=w.Layout(flex="1 1 auto", min_height="720px"),
