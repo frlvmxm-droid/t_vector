@@ -51,6 +51,93 @@ def build_train_panel() -> Any:
                             description="threshold:",
                             layout=w.Layout(width="240px"))
 
+    # ── Auto-profile + device (parity with desktop) ─────────────────────
+    auto_profile = w.Dropdown(
+        options=[
+            ("Smart (по умолчанию)", "smart"),
+            ("Strict (для чистого датасета)", "strict"),
+            ("Manual (ничего не переопределять)", "manual"),
+        ],
+        value="smart",
+        description="Auto-profile:",
+        layout=w.Layout(width="360px"),
+        style={"description_width": "initial"},
+    )
+    sbert_device = w.Dropdown(
+        options=[("Auto", "auto"), ("CPU", "cpu"),
+                 ("CUDA", "cuda"), ("MPS", "mps")],
+        value="auto",
+        description="SBERT device:",
+        layout=w.Layout(width="280px"),
+        style={"description_width": "initial"},
+    )
+
+    # ── Advanced Accordion (TrainingOptions extras) ─────────────────────
+    use_label_smoothing = w.Checkbox(value=False, description="Label smoothing")
+    label_smoothing_eps = w.FloatSlider(
+        value=0.05, min=0.0, max=0.3, step=0.01,
+        description="ls-eps:",
+        layout=w.Layout(width="280px"),
+    )
+    run_cv = w.Checkbox(value=False, description="K-fold CV (5)")
+    use_hard_negatives = w.Checkbox(value=False, description="Hard negatives")
+    use_field_dropout = w.Checkbox(value=False, description="Field dropout [TAG]")
+    field_dropout_prob = w.FloatSlider(
+        value=0.3, min=0.0, max=1.0, step=0.05,
+        description="fd-prob:", layout=w.Layout(width="260px"),
+    )
+    field_dropout_copies = w.IntSlider(
+        value=2, min=1, max=5, step=1,
+        description="fd-copies:", layout=w.Layout(width="220px"),
+    )
+    oversample_strategy = w.Dropdown(
+        options=[("cap", "cap"),
+                 ("augment_light", "augment_light"),
+                 ("augment_medium", "augment_medium")],
+        value="cap", description="over-strat:",
+        layout=w.Layout(width="260px"),
+        style={"description_width": "initial"},
+    )
+    max_dup_per_sample = w.IntSlider(
+        value=5, min=1, max=20, step=1,
+        description="max-dup:", layout=w.Layout(width="220px"),
+    )
+
+    advanced_box = w.VBox([
+        w.HBox([use_label_smoothing, label_smoothing_eps]),
+        w.HBox([run_cv, use_hard_negatives]),
+        w.HBox([use_field_dropout, field_dropout_prob, field_dropout_copies]),
+        w.HBox([oversample_strategy, max_dup_per_sample]),
+    ])
+    advanced = w.Accordion(children=[advanced_box])
+    advanced.set_title(0, "Advanced · Label smoothing / K-fold / Hard negatives / Field dropout")
+    advanced.selected_index = None  # collapsed by default
+
+    # ── Auto-profile → programmatic defaults ────────────────────────────
+    _PROFILES = {
+        "smart":  {"fuzzy_dedup": True,  "fuzzy_thr": 92, "calib": "sigmoid",
+                   "use_smote": True,  "balanced": False, "run_cv": False,
+                   "use_hard_negatives": False},
+        "strict": {"fuzzy_dedup": True,  "fuzzy_thr": 95, "calib": "isotonic",
+                   "use_smote": True,  "balanced": True,  "run_cv": True,
+                   "use_hard_negatives": True},
+    }
+
+    def _apply_profile(*_args: Any) -> None:
+        prof = _PROFILES.get(auto_profile.value)
+        if prof is None:
+            return  # manual — untouched
+        fuzzy_dedup.value = prof["fuzzy_dedup"]
+        fuzzy_thr.value = prof["fuzzy_thr"]
+        calib.value = prof["calib"]
+        use_smote.value = prof["use_smote"]
+        balanced.value = prof["balanced"]
+        run_cv.value = prof["run_cv"]
+        use_hard_negatives.value = prof["use_hard_negatives"]
+
+    auto_profile.observe(_apply_profile, names="value")
+    _apply_profile()
+
     run_btn = w.Button(description="Обучить", button_style="primary",
                        icon="play", layout=w.Layout(width="180px"))
 
@@ -97,6 +184,15 @@ def build_train_panel() -> Any:
                 calib_method=calib.value,
                 use_fuzzy_dedup=fuzzy_dedup.value,
                 fuzzy_dedup_threshold=int(fuzzy_thr.value),
+                use_label_smoothing=bool(use_label_smoothing.value),
+                label_smoothing_eps=float(label_smoothing_eps.value),
+                run_cv=bool(run_cv.value),
+                use_hard_negatives=bool(use_hard_negatives.value),
+                use_field_dropout=bool(use_field_dropout.value),
+                field_dropout_prob=float(field_dropout_prob.value),
+                field_dropout_copies=int(field_dropout_copies.value),
+                oversample_strategy=oversample_strategy.value,
+                max_dup_per_sample=int(max_dup_per_sample.value),
             )
 
             progress.update(0.1, "Обучение…")
@@ -131,6 +227,17 @@ def build_train_panel() -> Any:
                         "calib_method": calib.value,
                         "use_fuzzy_dedup": bool(fuzzy_dedup.value),
                         "fuzzy_dedup_threshold": int(fuzzy_thr.value),
+                        "auto_profile": auto_profile.value,
+                        "sbert_device": sbert_device.value,
+                        "use_label_smoothing": bool(use_label_smoothing.value),
+                        "label_smoothing_eps": float(label_smoothing_eps.value),
+                        "run_cv": bool(run_cv.value),
+                        "use_hard_negatives": bool(use_hard_negatives.value),
+                        "use_field_dropout": bool(use_field_dropout.value),
+                        "field_dropout_prob": float(field_dropout_prob.value),
+                        "field_dropout_copies": int(field_dropout_copies.value),
+                        "oversample_strategy": oversample_strategy.value,
+                        "max_dup_per_sample": int(max_dup_per_sample.value),
                     },
                 },
                 "per_class_thresholds": dict(extras.get("per_class_thresholds", {})),
@@ -174,17 +281,25 @@ def build_train_panel() -> Any:
 
     run_btn.on_click(_on_click)
 
+    columns_accordion = w.Accordion(
+        children=[w.VBox([w.HBox([text_col, label_col])])],
+    )
+    columns_accordion.set_title(0, "Колонки файлов")
+    columns_accordion.selected_index = None  # collapsed
+
     sources_card = section_card(
         "ИСТОЧНИКИ",
-        [w.HBox([upload, shared_path]), w.HBox([text_col, label_col])],
-        subtitle="Данные для обучения (XLSX/CSV) и имена колонок.",
+        [w.HBox([upload, shared_path]), columns_accordion],
+        subtitle="Данные для обучения (XLSX/CSV). Колонки по умолчанию: text / label.",
     )
     params_card = section_card(
         "ПАРАМЕТРЫ ОБУЧЕНИЯ",
         [
+            w.HBox([auto_profile, sbert_device]),
             w.HBox([C, max_iter]),
             w.HBox([test_size, balanced, use_smote]),
             w.HBox([calib, fuzzy_dedup, fuzzy_thr]),
+            advanced,
         ],
         subtitle="TF-IDF (word 1–2 + char 3–5) → LinearSVC → CalibratedClassifierCV.",
     )
