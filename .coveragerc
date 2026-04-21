@@ -14,7 +14,7 @@ omit =
     ctk_migration_pack/*
     # UI/view layers — deliberately exercised only through integration tests
     app_*_view_ctk.py
-    ui_widgets.py
+    ui_widgets_tk.py
     ui_theme.py
     ui_theme_ctk.py
     app_dialogs_ctk.py

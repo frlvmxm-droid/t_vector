@@ -15,7 +15,7 @@ bank_reason_trainer_gui.py — УСТАРЕВШАЯ точка входа (legac
   excel_utils.py     — read_headers, idx_of, estimate_total_rows, fmt_eta, fmt_speed
   ml_core.py         — make_hybrid_vectorizer, train_model, extract_cluster_keywords, …
   ui_theme.py        — apply_dark_theme
-  ui_widgets.py      — Tooltip, ScrollableFrame, ImageBackground
+  ui_widgets_tk.py   — Tooltip, ScrollableFrame, ImageBackground
   app.py             — класс App (главное окно)
 """
 if __name__ == "__main__":

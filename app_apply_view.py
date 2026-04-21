@@ -5,7 +5,7 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk
 
-from ui_widgets import Tooltip
+from ui_widgets_tk import Tooltip
 
 
 def build_apply_files_card(app, parent) -> None:

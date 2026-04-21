@@ -64,7 +64,7 @@ from app_train_workflow import validate_train_preconditions, build_validated_tra
 from task_runner import ErrorEnvelope, OperationLifecycle, begin_long_task, prepare_long_task_ui
 from app_logger import get_logger
 from ui_theme import BG, FG, ENTRY_BG, ACCENT, ACCENT2, MUTED, MUTED2, BORDER, PANEL, SUCCESS, WARNING, ERROR, _best_font
-from ui_widgets import Tooltip, ToggleSwitch, RoundedCard, CollapsibleSection
+from ui_widgets_tk import Tooltip, ToggleSwitch, RoundedCard, CollapsibleSection
 from artifact_contracts import TRAIN_MODEL_ARTIFACT_TYPE
 from dataset_analyzer import analyze_dataset, build_param_changes, _fmt
 

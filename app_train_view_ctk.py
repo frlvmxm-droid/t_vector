@@ -22,7 +22,7 @@ from ui_theme_ctk import (
     COLORS,
     font_label, font_sm, font_base, font_md_bold, font_lg_bold, font_mono,
 )
-from ui_widgets import Tooltip
+from ui_widgets_tk import Tooltip
 
 
 # ─────────────────────────────────────────────────────────────────────

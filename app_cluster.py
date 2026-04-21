@@ -143,7 +143,7 @@ from app_logger import get_logger
 from ui_theme import BG, FG, ENTRY_BG, ACCENT, MUTED, BORDER
 
 _log = get_logger(__name__)
-from ui_widgets import Tooltip, CollapsibleSection
+from ui_widgets_tk import Tooltip, CollapsibleSection
 
 
 # endregion

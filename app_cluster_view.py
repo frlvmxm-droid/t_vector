@@ -6,7 +6,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from ui_theme import ENTRY_BG, FG, ACCENT
-from ui_widgets import Tooltip
+from ui_widgets_tk import Tooltip
 
 
 def build_cluster_files_card(app, parent):

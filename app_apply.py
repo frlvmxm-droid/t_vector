@@ -48,7 +48,7 @@ from artifact_contracts import TRAIN_MODEL_ARTIFACT_TYPE
 from ui.tabs.apply_presenter import format_apply_autoprofile_log
 
 _log = get_logger(__name__)
-from ui_widgets import Tooltip, CollapsibleSection
+from ui_widgets_tk import Tooltip, CollapsibleSection
 
 
 class ApplyTabMixin:

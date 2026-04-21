@@ -34,6 +34,7 @@ for _mod in (
     "tkinter.messagebox",
     "ui_theme",
     "ui_widgets",
+    "ui_widgets_tk",
     "customtkinter",
 ):
     if _mod not in sys.modules and _ilu.find_spec(_mod.split(".")[0]) is None:

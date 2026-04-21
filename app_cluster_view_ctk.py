@@ -19,7 +19,7 @@ from ui_theme_ctk import (
     font_label, font_sm, font_base, font_md_bold, font_lg_bold, font_mono,
 )
 from app_train_view_ctk import Card, Pill, _field_label, _separator
-from ui_widgets import Tooltip
+from ui_widgets_tk import Tooltip
 
 
 # Демо-данные для scatter-визуализации

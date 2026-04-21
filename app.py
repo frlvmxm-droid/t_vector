@@ -64,7 +64,7 @@ from ml_core import SBERTVectorizer
 
 import hw_profile as _hw_module
 from ui_theme import apply_dark_theme, _best_font, BG, PANEL, PANEL2, FG, MUTED, MUTED2, ENTRY_BG, BORDER, ACCENT, ACCENT2, SELECT, SUCCESS, WARNING, ERROR, HOVER
-from ui_widgets import Tooltip, ScrollableFrame, ImageBackground, RoundedButton, PillTabBar, ToggleSwitch
+from ui_widgets_tk import Tooltip, ScrollableFrame, ImageBackground, RoundedButton, PillTabBar, ToggleSwitch
 
 from ui_theme_ctk import apply_theme as _ctk_apply_theme, COLORS as CTK_COLORS, font_label, font_md_bold, font_mono, font_sm
 from app_train_view_ctk import build_train_tab

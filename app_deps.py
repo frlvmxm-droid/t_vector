@@ -22,7 +22,7 @@ from config import SBERT_MODELS
 from ml_core import SBERT_LOCAL_DIR
 from config.ml_constants import hf_cache_key
 from ui_theme import FG, ENTRY_BG, ACCENT, SUCCESS, ERROR, WARNING
-from ui_widgets import Tooltip
+from ui_widgets_tk import Tooltip
 from app_logger import get_logger
 
 _log = get_logger(__name__)

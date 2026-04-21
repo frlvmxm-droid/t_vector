@@ -1,34 +1,27 @@
 """Regression test for ``ScrollableFrame`` widget lifecycle.
 
-``ui_widgets`` was converted from a flat module to a package during the
-Voilà web-UI port (``ui_widgets/`` now shadows ``ui_widgets.py``). The
-Tk ``ScrollableFrame`` still lives in the legacy module file; this test
-imports it via ``importlib`` so both layouts remain testable.
+The Tk ``ScrollableFrame`` lives in ``ui_widgets_tk.py`` (the legacy
+flat Tk module, renamed from ``ui_widgets.py`` after the Voilà web-UI
+port converted ``ui_widgets/`` into a package). This test imports it
+directly — no ``spec_from_file_location`` needed now that there is no
+name shadowing.
 """
 from __future__ import annotations
 
 import importlib.util
-import pathlib
 from unittest.mock import MagicMock
 
 import pytest
 
 
 def _load_scrollable_frame():
-    legacy_path = pathlib.Path(__file__).resolve().parent.parent / "ui_widgets.py"
-    if not legacy_path.is_file():
-        pytest.skip("Legacy ui_widgets.py not present in this checkout")
-    spec = importlib.util.spec_from_file_location("ui_widgets_legacy", legacy_path)
-    if spec is None or spec.loader is None:
-        pytest.skip("Could not build spec for legacy ui_widgets.py")
-    module = importlib.util.module_from_spec(spec)
     try:
-        spec.loader.exec_module(module)
+        import ui_widgets_tk  # noqa: F401 — ensure module importable
     except ImportError as exc:
-        pytest.skip(f"Legacy ui_widgets.py dependencies missing: {exc}")
-    cls = getattr(module, "ScrollableFrame", None)
+        pytest.skip(f"ui_widgets_tk dependencies missing: {exc}")
+    cls = getattr(ui_widgets_tk, "ScrollableFrame", None)
     if cls is None:
-        pytest.skip("ScrollableFrame not exported by legacy ui_widgets.py")
+        pytest.skip("ScrollableFrame not exported by ui_widgets_tk")
     return cls
 
 

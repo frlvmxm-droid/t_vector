@@ -227,8 +227,8 @@ def test_cluster_run_has_preflight_context_and_processing_reset():
 
 
 def test_scrollable_frame_uses_local_wheel_bindings():
-    assert not _has_bind_all_call("ui_widgets.py")
-    assert _has_string_containing("ui_widgets.py", "<MouseWheel>")
+    assert not _has_bind_all_call("ui_widgets_tk.py")
+    assert _has_string_containing("ui_widgets_tk.py", "<MouseWheel>")
 
 
 def test_cluster_t5_builder_uses_precomputed_header_index():

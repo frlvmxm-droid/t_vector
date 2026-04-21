@@ -186,7 +186,7 @@ apply_theme("amber-crt")      # ретро CRT
 ## Ограничения, о которых стоит знать
 
 1. **Скруглённые карточки внутри `CTkScrollableFrame`** — иногда обрезаются по краям. Если критично — оборачивай в `CTkFrame(corner_radius=0)`.
-2. **Tooltip от старого `ui_widgets.py`** работает с любыми Tk-виджетами, включая CTk, потому что CTk наследуется от `tk.Frame`/`tk.Canvas`.
+2. **Tooltip от старого `ui_widgets_tk.py`** работает с любыми Tk-виджетами, включая CTk, потому что CTk наследуется от `tk.Frame`/`tk.Canvas`.
 3. **Treeview-стилизация под dark-теmu** требует ручной настройки `ttk.Style()` — пример ниже.
 
 ```python
