@@ -20,6 +20,23 @@ _SUPPORTED_COMBOS = {
     "ensemble": ("kmeans",),
 }
 
+# Snap keys that belong to a specific vec_mode/algo and must be dropped
+# when that combo is not active — preserves bit-for-bit compatibility
+# with the pre-refactor behavior (when the inline dict skipped these
+# branches entirely).
+_VEC_MODE_GATED: dict[str, tuple[str, ...]] = {
+    "ensemble": ("sbert_model2",),
+    "combo":    ("combo_alpha", "combo_svd_dim"),
+}
+_ALGO_GATED: dict[str, tuple[str, ...]] = {
+    "hdbscan": ("hdbscan_min_cluster_size", "hdbscan_min_samples", "hdbscan_eps"),
+    "lda":     ("lda_max_iter",),
+}
+
+# Keys tracked for session save/restore but not meant for the service
+# layer (filesystem picker).
+_CLUSTER_SNAP_EXCLUDE: frozenset[str] = frozenset({"shared_paths"})
+
 
 def build_cluster_panel() -> tuple[Any, dict[str, Any], Callable[[], dict[str, Any]]]:
     """Builds the 'Кластеризация' tab.
@@ -217,6 +234,63 @@ def build_cluster_panel() -> tuple[Any, dict[str, Any], Callable[[], dict[str, A
 
     cancel_event_box: dict[str, threading.Event] = {}
 
+    # ── Session snap wiring ─────────────────────────────────────────────
+    # Widget keys here intentionally mirror the service-layer snap-names
+    # (``cluster_vec_mode``, ``cluster_algo``, ``cluster_auto_k``,
+    # ``merge_similar_clusters``, ``minibatch_batch_size``) so
+    # ``_service_snap`` below can simply strip the ``cluster.`` prefix
+    # rather than maintain a rename map.
+    widgets_by_key: dict[str, Any] = {
+        "cluster.shared_paths": shared_paths,
+        "cluster.text_col": text_col,
+        "cluster.cluster_vec_mode": vec_mode,
+        "cluster.cluster_algo": algo,
+        "cluster.k_clusters": k_clusters,
+        "cluster.sbert_model": sbert_model,
+        "cluster.sbert_model2": sbert_model2,
+        "cluster.sbert_device": sbert_device,
+        "cluster.combo_alpha": combo_alpha,
+        "cluster.combo_svd_dim": combo_svd_dim,
+        "cluster.n_init_cluster": n_init_cluster,
+        "cluster.cluster_min_df": cluster_min_df,
+        "cluster.hdbscan_min_cluster_size": hdbscan_min_cs,
+        "cluster.hdbscan_min_samples": hdbscan_min_samples,
+        "cluster.hdbscan_eps": hdbscan_eps,
+        "cluster.lda_max_iter": lda_max_iter,
+        "cluster.minibatch_kmeans": minibatch_kmeans,
+        "cluster.minibatch_batch_size": minibatch_size,
+        "cluster.use_umap": umap_enabled,
+        "cluster.umap_n_components": umap_n_components,
+        "cluster.umap_n_neighbors": umap_n_neighbors,
+        "cluster.umap_min_dist": umap_min_dist,
+        "cluster.umap_metric": umap_metric,
+        "cluster.umap_use_pca_pre": umap_use_pca_pre,
+        "cluster.use_llm_naming": use_llm_naming,
+        "cluster.use_t5_summary": use_t5_summary,
+        "cluster.cluster_auto_k": use_auto_k,
+        "cluster.merge_similar_clusters": merge_similar,
+        "cluster.merge_threshold": merge_threshold,
+        "cluster.n_repr_examples": n_repr_examples,
+    }
+
+    def snap_fn() -> dict[str, Any]:
+        """Full namespaced snap for session save/restore."""
+        return {key: widget.value for key, widget in widgets_by_key.items()}
+
+    def _service_snap() -> dict[str, Any]:
+        """Bare-key snap for ``ClusteringWorkflow.run(snap=...)``.
+
+        Strips the ``cluster.`` prefix and drops session-only keys.
+        Caller still has to inject runtime-derived fields (``output_path``,
+        ``sbert_model`` fallback) and gate vec_mode/algo-specific keys —
+        see ``_run_clustering``.
+        """
+        return {
+            key.split(".", 1)[1]: widget.value
+            for key, widget in widgets_by_key.items()
+            if key.split(".", 1)[1] not in _CLUSTER_SNAP_EXCLUDE
+        }
+
     def _run_clustering() -> None:
         try:
             paths = _resolve_input_paths(upload, shared_paths.value)
@@ -238,47 +312,23 @@ def build_cluster_panel() -> tuple[Any, dict[str, Any], Callable[[], dict[str, A
             tmp_dir = pathlib.Path(tempfile.mkdtemp(prefix="brt_cluster_"))
             out_csv = tmp_dir / "clusters.csv"
 
-            snap = {
-                "cluster_vec_mode": vec_mode.value,
-                "cluster_algo": algo.value,
-                "k_clusters": int(k_clusters.value),
-                "text_col": text_col.value,
-                "output_path": str(out_csv),
-                "sbert_model": sbert_model.value.strip() or "cointegrated/rubert-tiny2",
-                "sbert_device": sbert_device.value,
-                "n_init_cluster": int(n_init_cluster.value),
-                "cluster_min_df": int(cluster_min_df.value),
-                # Post-process switches (Phase 11 service layer honors these)
-                "cluster_auto_k": bool(use_auto_k.value),
-                "use_llm_naming": bool(use_llm_naming.value),
-                "use_t5_summary": bool(use_t5_summary.value),
-                "merge_similar_clusters": bool(merge_similar.value),
-                "merge_threshold": float(merge_threshold.value),
-                "n_repr_examples": int(n_repr_examples.value),
-                # MiniBatch KMeans
-                "minibatch_kmeans": bool(minibatch_kmeans.value),
-                "minibatch_batch_size": int(minibatch_size.value),
-                # UMAP projection (honored by build_vectors when enabled)
-                "use_umap": bool(umap_enabled.value),
-                "umap_n_components": int(umap_n_components.value),
-                "umap_n_neighbors": int(umap_n_neighbors.value),
-                "umap_min_dist": float(umap_min_dist.value),
-                "umap_metric": umap_metric.value,
-                "umap_use_pca_pre": bool(umap_use_pca_pre.value),
-            }
+            snap = _service_snap()
+            snap["output_path"] = str(out_csv)
+            snap["sbert_model"] = (
+                snap["sbert_model"].strip() or "cointegrated/rubert-tiny2"
+            )
+            for mode, keys in _VEC_MODE_GATED.items():
+                if vec_mode.value != mode:
+                    for k in keys:
+                        snap.pop(k, None)
             if vec_mode.value == "ensemble":
                 snap["sbert_model2"] = (
-                    sbert_model2.value.strip() or snap["sbert_model"]
+                    snap["sbert_model2"].strip() or snap["sbert_model"]
                 )
-            if vec_mode.value == "combo":
-                snap["combo_alpha"] = float(combo_alpha.value)
-                snap["combo_svd_dim"] = int(combo_svd_dim.value)
-            if algo.value == "hdbscan":
-                snap["hdbscan_min_cluster_size"] = int(hdbscan_min_cs.value)
-                snap["hdbscan_min_samples"] = int(hdbscan_min_samples.value)
-                snap["hdbscan_eps"] = float(hdbscan_eps.value)
-            if algo.value == "lda":
-                snap["lda_max_iter"] = int(lda_max_iter.value)
+            for algo_name, keys in _ALGO_GATED.items():
+                if algo.value != algo_name:
+                    for k in keys:
+                        snap.pop(k, None)
 
             progress.update(0.05, "Запуск pipeline…")
             from cluster_workflow_service import (
@@ -387,43 +437,6 @@ def build_cluster_panel() -> tuple[Any, dict[str, Any], Callable[[], dict[str, A
         [w.HBox([run_btn, download_box]), progress.widget, metric_cards, summary_out],
         subtitle="Запуск, прогресс и сводка по кластерам.",
     )
-    # ── Session snap wiring ─────────────────────────────────────────────
-    widgets_by_key: dict[str, Any] = {
-        "cluster.shared_paths": shared_paths,
-        "cluster.text_col": text_col,
-        "cluster.vec_mode": vec_mode,
-        "cluster.algo": algo,
-        "cluster.k_clusters": k_clusters,
-        "cluster.sbert_model": sbert_model,
-        "cluster.sbert_model2": sbert_model2,
-        "cluster.sbert_device": sbert_device,
-        "cluster.combo_alpha": combo_alpha,
-        "cluster.combo_svd_dim": combo_svd_dim,
-        "cluster.n_init_cluster": n_init_cluster,
-        "cluster.cluster_min_df": cluster_min_df,
-        "cluster.hdbscan_min_cluster_size": hdbscan_min_cs,
-        "cluster.hdbscan_min_samples": hdbscan_min_samples,
-        "cluster.hdbscan_eps": hdbscan_eps,
-        "cluster.lda_max_iter": lda_max_iter,
-        "cluster.minibatch_kmeans": minibatch_kmeans,
-        "cluster.minibatch_size": minibatch_size,
-        "cluster.use_umap": umap_enabled,
-        "cluster.umap_n_components": umap_n_components,
-        "cluster.umap_n_neighbors": umap_n_neighbors,
-        "cluster.umap_min_dist": umap_min_dist,
-        "cluster.umap_metric": umap_metric,
-        "cluster.umap_use_pca_pre": umap_use_pca_pre,
-        "cluster.use_llm_naming": use_llm_naming,
-        "cluster.use_t5_summary": use_t5_summary,
-        "cluster.use_auto_k": use_auto_k,
-        "cluster.merge_similar": merge_similar,
-        "cluster.merge_threshold": merge_threshold,
-        "cluster.n_repr_examples": n_repr_examples,
-    }
-
-    def snap_fn() -> dict[str, Any]:
-        return {key: widget.value for key, widget in widgets_by_key.items()}
-
     vbox = w.VBox([sources_card, algo_card, postproc_card, run_card])
     return vbox, widgets_by_key, snap_fn
 
