@@ -246,12 +246,17 @@ def _wire_session(
 
 
 def _hardware_card_html() -> str:
-    """Best-effort local hardware stats for the sidebar card."""
-    try:
-        import os
-        cpu = os.cpu_count() or "?"
-    except Exception:
-        cpu = "?"
+    """Best-effort local hardware stats for the sidebar card.
+
+    Kept cheap on purpose: no ``import torch`` and no CUDA probe at
+    ``build_app()`` time — both can stall for 5–30 s on JupyterHub
+    kernels with heavy ML stacks or misconfigured GPU drivers. Presence
+    of ``torch`` is probed via ``importlib.util.find_spec`` (metadata
+    only, no module load).
+    """
+    import importlib.util
+    import os
+    cpu = os.cpu_count() or "?"
     ram = "—"
     try:
         import psutil  # optional
@@ -260,20 +265,13 @@ def _hardware_card_html() -> str:
         ram = f"{used_gb:.1f} / {total_gb:.1f} ГБ"
     except Exception:
         pass
-    gpu = "—"
-    torch_ver = "—"
-    try:
-        import torch  # optional
-        torch_ver = torch.__version__.split("+")[0]
-        if torch.cuda.is_available():
-            gpu = torch.cuda.get_device_name(0)
-    except Exception:
-        pass
+    torch_status = (
+        "установлен" if importlib.util.find_spec("torch") is not None else "—"
+    )
     return (
         "<div class='brt-hw-card'>"
         f"<div>CPU&nbsp;&nbsp;&nbsp;<b>{cpu} cores</b></div>"
         f"<div>RAM&nbsp;&nbsp;&nbsp;<b>{ram}</b></div>"
-        f"<div>GPU&nbsp;&nbsp;&nbsp;<b>{gpu}</b></div>"
-        f"<div>torch&nbsp;<b>{torch_ver}</b></div>"
+        f"<div>torch&nbsp;<b>{torch_status}</b></div>"
         "</div>"
     )

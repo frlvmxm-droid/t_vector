@@ -10,7 +10,12 @@ from typing import Any
 ROOT_CANDIDATES = (
     "~/.classification_tool",
     "~/classification_tool",
-    "./",
+)
+
+_INITIAL_PLACEHOLDER = (
+    "<div class='muted' style='padding:18px;text-align:center'>"
+    "Нажмите 🔄 Сканировать — список артефактов загрузится."
+    "</div>"
 )
 
 
@@ -29,7 +34,11 @@ def build_artifacts_dialog(on_close: Callable[[], None]) -> Any:
     )
     close_btn.on_click(lambda _b: on_close())
 
-    table_html = w.HTML(_render_table())
+    # Deliberately NOT calling ``_render_table()`` here — on a JupyterHub
+    # kernel backed by NFS the rglob + SHA-256 hash of every .joblib can
+    # take minutes on ``build_app()`` cold-start, blocking the Voilà
+    # "Executing 2 of 2" cell. Table is populated on first refresh click.
+    table_html = w.HTML(_INITIAL_PLACEHOLDER)
 
     def _refresh(_b: Any = None) -> None:
         table_html.value = _render_table()
