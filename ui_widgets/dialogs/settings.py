@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import html
+import importlib.util
 import os
 from collections.abc import Callable
 from typing import Any
@@ -71,10 +72,14 @@ def build_settings_dialog(on_close: Callable[[], None]) -> Any:
 def _render_deps() -> str:
     rows = []
     for mod, pkg in OPTIONAL_DEPS:
-        try:
-            __import__(mod)
+        # ``find_spec`` checks importability via package metadata without
+        # actually loading the module — critical for cold-start latency
+        # (``__import__('torch')`` alone can take ~3s, and chained heavy
+        # deps like transformers / sentence-transformers / bertopic add
+        # up to ~15-20s for the Voilà ``build_app()`` call).
+        if importlib.util.find_spec(mod) is not None:
             kind, label = "ok", "✅ установлен"
-        except ImportError:
+        else:
             kind, label = "warn", "— не установлен"
         rows.append(
             "<tr>"
