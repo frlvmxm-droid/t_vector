@@ -2,8 +2,9 @@
 
 This guide describes how to expose the three main BankReasonTrainer
 workflows — **Обучение / Применение / Кластеризация** — as a
-browser-based web UI on a JupyterHub deployment, without the desktop
-Tkinter app.
+browser-based web UI on a JupyterHub deployment. (The desktop Tk/CTk
+app was removed in Sprint 3 of the web migration; the Voilà dashboard
+is now the only UI.)
 
 The UI is built from the headless service layer
 (`app_train_service`, `apply_prediction_service`,
@@ -155,8 +156,10 @@ the Apply tab and by `python -m bank_reason_trainer apply`.
    `text,cluster_id,top_keywords` is produced.
 
 Unsupported combos (BERTopic / SetFit / FASTopic / hierarchical /
-GMM) still live only in the desktop app (`app_cluster.run_cluster`)
-and are surfaced as a warning banner in the tab.
+GMM) are surfaced as a warning banner in the panel. They fall through
+to the prepare-only skeleton path if you force-run via the CLI with
+`--allow-skeleton`; full end-to-end for these combos will need to be
+re-implemented in the service layer.
 
 ---
 
@@ -168,9 +171,9 @@ and are surfaced as a warning banner in the tab.
 | `ModuleNotFoundError: ui_widgets` | The notebook's first cell must add the repo root to `sys.path`. `notebooks/ui.ipynb` already does this — if you moved it, update the path. |
 | Upload hangs at ~100 MB | Browser limit. Use the "Путь:" field with a shared-volume path instead. |
 | Progress bar doesn't move | The worker thread may be blocked on a HuggingFace download. Check the log pane or kernel stderr. |
-| `ImportError: cannot import name '_tkinter'` | Something imported `app.py` into the kernel. The UI uses only `*_service.py`; do not import the desktop modules. |
+| `ModuleNotFoundError: app` / `app_train` / `bootstrap_run` | Desktop modules were removed in Sprint 3 of the web migration. The UI uses only `*_service.py` / `app_cluster_pipeline`; update any stale notebook cells that still reference them. |
 | `ModelLoadError: [UNTRUSTED_MODEL_PATH]` | The .joblib path is not in `~/.classification_tool/trusted_models.json`. The Apply panel calls `load_model_artifact` with defaults — either register the hash or load with `require_trusted=False` in a notebook cell. |
-| Cluster tab rejects combo | Only `tfidf+{kmeans,agglo,lda,hdbscan}`, `sbert+kmeans`, `combo+kmeans`, `ensemble+kmeans` are supported in the web UI. For BERTopic / SetFit / FASTopic use the CLI with `--allow-skeleton` or the desktop app. |
+| Cluster panel rejects combo | Only `tfidf+{kmeans,agglo,lda,hdbscan}`, `sbert+kmeans`, `combo+kmeans`, `ensemble+kmeans` are supported. For BERTopic / SetFit / FASTopic use the CLI with `--allow-skeleton` (prepare-only path). |
 | Two workers launched in one session | The action button is disabled while a worker is alive. If the kernel was restarted mid-run, reload the page to reset widget state. |
 
 ---
@@ -212,16 +215,15 @@ and are surfaced as a warning banner in the tab.
 The Auto-K / LLM-naming / T5 services are pure-Python modules
 (`auto_k_service.py`, `cluster_naming_service.py`,
 `cluster_summarization_service.py`) — they live next to the headless
-service layer and have unit tests in `tests/test_*_service.py`. The
-desktop closures in `app_cluster.py` are unchanged; the new modules are
-the canonical implementation for the web-UI / CLI.
+service layer and have unit tests in `tests/test_*_service.py`. They
+are the canonical implementation used by the web UI and the CLI.
 
 Context dialogs (Phase 12) use an `ipywidgets.Stack` overlay: the three
 workflow panels live at slots 0..2, the dialogs at slots 3..5. Clicking a
 context button swaps the `selected_index`; clicking the ✕ button returns
 to the last-active workflow panel. All dialogs are read-only; editing
-LLM keys or deleting artifacts is out of scope for the web-UI (use the
-desktop app or shell tools).
+LLM keys or deleting artifacts is out of scope for the web UI — use
+shell tools (`~/.classification_tool/` is a regular directory tree).
 
 ---
 
@@ -236,7 +238,8 @@ desktop app or shell tools).
   environment. The dialog's Settings tab indicates which keys are set.
 - T5 summarization needs ~1 GB of model weights on first call. Pre-seed
   via `HF_HOME` or it will download on the first cluster run.
-- Plotly / Cleanlab visualisations are still desktop-only.
+- Plotly / Cleanlab visualisations not yet wired into the web panels
+  (can be added to the cluster panel via `plotly.FigureWidget`).
 - No GPU contention guard on multi-user hubs — rely on JupyterHub
   resource limits.
 

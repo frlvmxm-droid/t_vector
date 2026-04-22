@@ -26,9 +26,10 @@ ENV PATH="/opt/venv/bin:/root/.local/bin:${PATH}"
 
 WORKDIR /app
 
-# System deps for tkinter (headless smoke), sklearn (libgomp), and matplotlib.
+# System deps for sklearn (libgomp) and outbound HTTPS (HuggingFace cache).
+# No X11 / Tkinter — the UI is web-only (Voilà) after Sprint 3 of the
+# web migration (docs/WEB_MIGRATION_PLAN.md).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3-tk \
         libgomp1 \
         ca-certificates \
         curl \
@@ -50,5 +51,6 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 
 # Default: run the headless test suite (CI mode). Override with
-# `python app.py` for GUI or `python -m bank_reason_trainer ...` for CLI.
+# `python -m bank_reason_trainer ...` for the CLI, or
+# `voila notebooks/ui.ipynb --port=8866 --Voila.ip=0.0.0.0` for the web UI.
 CMD ["python", "-m", "pytest", "-q", "--tb=short", "tests/"]

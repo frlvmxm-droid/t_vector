@@ -1,12 +1,14 @@
 # Deploying BankReasonTrainer on a Remote Server / JupyterHub
 
-This guide covers three ways to run the project without the desktop
-Tkinter UI: **Python CLI** on a Linux server, **Docker**, and
-**JupyterHub / Jupyter notebooks** (the primary focus).
+This guide covers four ways to run the project: **Python CLI** on a
+Linux server, **Docker**, **JupyterHub / Jupyter notebooks**, and the
+**Voilà browser dashboard** (the primary UI).
 
-The service layer (`app_train_service.py`, `apply_prediction_service.py`,
-`cluster_workflow_service.py`) contains zero `tkinter` imports and is
-safe to use from batch scripts, notebooks, and Docker.
+The desktop Tkinter/CTk UI was removed in Sprint 3 of the web migration
+(`docs/WEB_MIGRATION_PLAN.md`). The service layer
+(`app_train_service.py`, `apply_prediction_service.py`,
+`cluster_workflow_service.py`) has always been Tk-free and is the same
+code path used by the CLI, notebooks, and the Voilà dashboard.
 
 ---
 
@@ -25,8 +27,8 @@ safe to use from batch scripts, notebooks, and Docker.
 
 - Python 3.11–3.13 (`requires-python = ">=3.11,<3.14"`)
 - ≥4 GB RAM for TF-IDF; ≥8 GB + GPU for SBERT / SetFit / DeBERTa
-- Linux (Debian bookworm confirmed via Dockerfile); macOS works; Windows
-  is desktop-GUI only
+- Linux (Debian bookworm confirmed via Dockerfile); macOS and Windows
+  also work via `./run_web.sh` / `run_web.bat`.
 
 Optional environment variables:
 
@@ -35,7 +37,7 @@ Optional environment variables:
 | `PYTHONPATH=.` | add repo root to `sys.path` when launching from repo | CLI, Jupyter |
 | `HF_HOME` | HuggingFace cache location (defaults to `~/.cache/huggingface`) | SBERT / transformers |
 | `BRT_LLM_PROVIDER=offline` | deterministic stub LLM (CI / air-gapped envs) | optional |
-| `LLM_SNAPSHOT_KEY` | Fernet key for encrypted API keys | **UI only**, skip for CLI/Jupyter |
+| `LLM_SNAPSHOT_KEY` | Fernet key for encrypted API keys in session snapshots | **Voilà UI only**, skip for pure CLI/Jupyter |
 
 ---
 
@@ -68,8 +70,8 @@ PYTHONPATH=. python -m bank_reason_trainer cluster \
 ```
 
 Notes:
-- The `--snap` flag accepts a JSON file with the same shape the desktop
-  UI serialises via `app._snap_params()`.
+- The `--snap` flag accepts a JSON file with the same shape the web UI
+  serialises via `ui_widgets/session.py:save_session()`.
 - Artifacts are written under `~/.classification_tool/`
   (`experiments.jsonl`, `llm_rerank_cache/`). The process needs write
   access to `$HOME`.
@@ -99,9 +101,8 @@ docker run --rm \
 ```
 
 The image pins `python:3.11.11-slim-bookworm` and installs wheels from
-`uv.lock` via `uv sync --frozen` (see ADR-0008). The `python3-tk`
-package is present for headless smoke tests — it does **not** enable
-the GUI (no display).
+`uv.lock` via `uv sync --frozen` (see ADR-0008). No X11 / Tkinter
+packages are installed — the image is web-UI only.
 
 ---
 
@@ -253,13 +254,15 @@ print(f"K={result.n_clusters}  noise={result.n_noise}")
 - **Supported combos only.** `ClusteringWorkflow.run` covers
   `tfidf+{kmeans,agglo,lda,hdbscan}`, `sbert+kmeans`, `combo+kmeans`,
   and `ensemble+kmeans`. Other combos (BERTopic / SetFit / FASTopic /
-  hierarchical / GMM) still live inside the desktop-bound
-  `app_cluster.run_cluster()` and are not callable from a notebook yet.
-- **Desktop UI helpers not portable.** LLM cluster naming, T5
-  summarisation, Plotly visualisation, UMAP, and auto-K selection live
-  inside broken closure helpers (`_cluster_step_*`) in `app_cluster.py`
-  and are not exposed by the service layer. Build your own LLM / plot
-  helpers in the notebook if you need them.
+  hierarchical / GMM) fall through to the prepare-only skeleton path
+  (`--allow-skeleton`) and have to be re-implemented in a notebook
+  cell if full end-to-end is needed.
+- **Post-processing helpers not exposed.** LLM cluster naming, T5
+  summarisation, Plotly visualisation, UMAP, and auto-K selection
+  currently live inside the Voilà cluster panel. When working from a
+  pure notebook, call `cluster_workflow_service.ClusteringWorkflow.run`
+  to get the cluster ids + keywords, then layer your own LLM /
+  visualisation helpers on top.
 
 ---
 
@@ -296,7 +299,7 @@ Full operator setup, user guide, and troubleshooting live in
 | `ModuleNotFoundError: app_train_service` | `sys.path` is missing the repo root — add `sys.path.insert(0, "<repo>")` (notebook) or `PYTHONPATH=.` (CLI). |
 | `OSError: [Errno 30] Read-only file system: clustering/` | `CLUST_DIR` is inside a read-only repo. Symlink `clustering/` to a writable directory. |
 | `RuntimeError: couldn't connect to 'https://huggingface.co'` | No internet for SBERT / T5. Pre-download the model with `huggingface-cli download <name>` into `$HF_HOME`. |
-| `ImportError: cannot import name '_tkinter'` when importing `app.py` | **Do not import `app.py`** in a notebook. Use the `*_service.py` modules and `app_cluster_pipeline` directly. |
+| `ModuleNotFoundError: app` / `bootstrap_run` / `app_train` | Desktop UI modules were removed in Sprint 3 of the web migration. Use the `*_service.py` modules (`app_train_service`, `apply_prediction_service`, `cluster_workflow_service`) and `app_cluster_pipeline` directly from the notebook. |
 | `ModelLoadError: [UNTRUSTED_MODEL_PATH]` | `load_model_artifact` was called with `require_trusted=True` and the path is not in the per-user trust store (`~/.classification_tool/trusted_models.json`). Either drop the flag in notebook code or register the hash via `TrustStore`. |
 
 ---
