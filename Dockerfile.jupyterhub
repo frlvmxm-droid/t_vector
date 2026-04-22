@@ -1,0 +1,101 @@
+# syntax=docker/dockerfile:1
+#
+# Dockerfile.jupyterhub — self-hosted JupyterHub image for the
+# BankReasonTrainer web UI.  Paired with docker-compose.yml.example and
+# jupyterhub_config.py.example (both in the repo root).
+#
+# Build:
+#   docker build -f Dockerfile.jupyterhub -t bank-reason-trainer-hub:demo .
+#
+# Or with SBERT pre-bundled (adds ~500 MB to the image):
+#   docker build --build-arg PREDOWNLOAD_SBERT=1 \
+#                -f Dockerfile.jupyterhub -t bank-reason-trainer-hub:demo .
+#
+# Run via docker-compose (recommended — brings up PostgreSQL as well):
+#   cp docker-compose.yml.example docker-compose.yml
+#   cp jupyterhub_config.py.example jupyterhub_config.py
+#   docker compose up --build
+#
+# Reproducibility contract:
+#   * Base image is pinned to an explicit JupyterHub release.
+#   * Application wheels come from uv.lock (--extra ml --extra ui).
+#   * Hub-specific Python packages (dummyauthenticator, psycopg2-binary)
+#     are installed explicitly here — they are deploy-time concerns and
+#     not part of pyproject.toml.
+#
+# NOT production-ready as-is — see header of docker-compose.yml.example
+# for the list of hardening steps (TLS, DockerSpawner, real authenticator,
+# Docker secrets).
+FROM jupyterhub/jupyterhub:4.1.5
+
+ENV UV_VERSION=0.8.17
+ENV UV_PROJECT_ENVIRONMENT=/opt/venv
+ENV UV_LINK_MODE=copy
+ENV PATH="/opt/venv/bin:/root/.local/bin:${PATH}"
+
+# System deps:
+#   libgomp1 — OpenMP runtime required by scikit-learn wheels.
+#   ca-certificates + curl — HF Hub downloads + uv installer.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libgomp1 \
+        ca-certificates \
+        curl \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh
+
+WORKDIR /app
+
+# Install Python deps from uv.lock in a separate layer so source edits
+# don't bust the dependency cache.  The dev/test extra is skipped — the
+# hub image only needs runtime + ml + web UI.
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-install-project --extra ml --extra ui
+
+# Hub-specific Python packages — managed here, not in pyproject.toml,
+# because they're deployment add-ons (the application itself doesn't
+# import them).  Versions pinned to minor.
+RUN /opt/venv/bin/pip install --no-cache-dir \
+        "dummyauthenticator>=1.0,<2.0" \
+        "psycopg2-binary>=2.9,<3.0" \
+        "jupyterlab>=4.0,<5.0" \
+        "notebook>=7.0,<8.0"
+
+# Copy the repo and finalise the project install.
+COPY . .
+RUN uv sync --frozen --extra ml --extra ui
+
+# Optional: pre-download SBERT model weights at build time.
+# Off by default to keep the image ~1 GB; enable when network at runtime
+# is untrusted or air-gapped.
+ARG PREDOWNLOAD_SBERT=0
+ENV HF_HOME=/shared/hf-cache
+RUN mkdir -p "${HF_HOME}" \
+ && if [ "${PREDOWNLOAD_SBERT}" = "1" ]; then \
+        /opt/venv/bin/python download_sbert_models.py || true; \
+    fi
+
+# Pre-created demo users so LocalProcessSpawner can setuid into them.
+# Replace with LDAP/OAuth/PAM users for real deployments.
+RUN useradd -m -s /bin/bash admin \
+ && useradd -m -s /bin/bash demo \
+ && mkdir -p /srv/jupyterhub/state \
+ && chmod 700 /srv/jupyterhub/state
+
+ENV PYTHONPATH=/app
+ENV PYTHONDONTWRITEBYTECODE=1
+
+# Expose the hub's user-facing port (proxy → hub). The internal hub API
+# on 8081 is not published — docker-compose puts hub + spawners on a
+# shared network.
+EXPOSE 8000
+
+# Cookie secret is auto-generated on first boot into the state volume if
+# it doesn't exist; subsequent boots reuse it so session cookies survive
+# restarts.
+CMD ["sh", "-c", "\
+    [ -f /srv/jupyterhub/state/cookie_secret ] || \
+        (openssl rand -hex 32 > /srv/jupyterhub/state/cookie_secret && \
+         chmod 600 /srv/jupyterhub/state/cookie_secret); \
+    exec jupyterhub -f /srv/jupyterhub/jupyterhub_config.py \
+"]

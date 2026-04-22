@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Сетевой клиент LLM-провайдеров с retry/circuit-breaker/cache."""
 from __future__ import annotations
 
@@ -12,10 +11,10 @@ import time
 import urllib.error as _urlerr
 import urllib.request as _urlreq
 from collections import OrderedDict
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from ipaddress import ip_address
 from json import JSONDecodeError
-from typing import Any, Dict
+from typing import Any
 from urllib.parse import urlparse
 
 from app_logger import get_logger
@@ -35,7 +34,7 @@ _CACHE_TTL_SEC = 600
 _CACHE_MAX_ENTRIES = max(32, int(os.getenv("LLM_CACHE_MAX_ENTRIES", "256")))
 _CACHE_CLEANUP_EVERY = max(1, int(os.getenv("LLM_CACHE_CLEANUP_EVERY", "32")))
 
-_PROVIDER_HOST_ALLOWLIST: Dict[str, set[str]] = {
+_PROVIDER_HOST_ALLOWLIST: dict[str, set[str]] = {
     "openai": {"api.openai.com"},
     "anthropic": {"api.anthropic.com"},
     "qwen": {"dashscope.aliyuncs.com"},
@@ -84,7 +83,7 @@ def is_safe_url(
             logger.info("ssrf-check host=%s ips=%s", hostname, ",".join(ips))
         if not _all_ips_safe(ips, allow_private_hosts=allow_private_hosts):
             return False
-    except Exception:
+    except Exception:  # noqa: BLE001 — SSRF check is fail-closed; any DNS/resolution error → deny
         return False
     return True
 
@@ -92,9 +91,9 @@ def is_safe_url(
 class LLMClient:
     """Сетевой клиент для LLM-провайдеров, используемых в кластеризации."""
 
-    _circuit_state: Dict[str, Dict[str, Any]] = {}
-    _response_cache: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
-    _cache_stats: Dict[str, int] = {"hit": 0, "miss": 0, "eviction": 0}
+    _circuit_state: dict[str, dict[str, Any]] = {}
+    _response_cache: OrderedDict[str, dict[str, Any]] = OrderedDict()
+    _cache_stats: dict[str, int] = {"hit": 0, "miss": 0, "eviction": 0}
     _cache_cleanup_ctr: int = 0
     _state_lock = threading.RLock()
     _stats_lock = threading.RLock()
@@ -104,6 +103,65 @@ class LLMClient:
         with cls._stats_lock:
             cls._cache_stats[key] = int(cls._cache_stats.get(key, 0)) + int(delta)
 
+    # ------------------------------------------------------------------
+    # Offline provider (ADR-0004) — deterministic CI-side stub
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _offline_enabled() -> bool:
+        """True iff env BRT_LLM_PROVIDER is set and lower-cases to 'offline'."""
+        val = (os.environ.get("BRT_LLM_PROVIDER") or "").strip().lower()
+        return val == "offline"
+
+    @classmethod
+    def _offline_complete(
+        cls,
+        provider: str,
+        model: str,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int,
+        temperature: float | None,
+    ) -> str:
+        """Deterministic stub.
+
+        Resolution order:
+          1. JSONL replay file at path from env BRT_LLM_REPLAY. Each line:
+             {"key": "<sha256>", "response": "..."}. Match by cache-key.
+          2. First "• <candidate>" bullet from user_prompt — the `rerank_top_k`
+             prompt format (see llm_reranker._build_rerank_user).
+          3. Empty string.
+
+        Never performs network I/O, raises, or mutates the circuit-breaker.
+        """
+        key = cls._cache_key(
+            provider, model, system_prompt, user_prompt, max_tokens, temperature,
+        )
+        replay_path = (os.environ.get("BRT_LLM_REPLAY") or "").strip()
+        if replay_path and os.path.isfile(replay_path):
+            try:
+                with open(replay_path, encoding="utf-8") as fh:
+                    for line in fh:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            rec = json.loads(line)
+                        except JSONDecodeError:
+                            continue
+                        if str(rec.get("key")) == key:
+                            return str(rec.get("response") or "")
+            except OSError:
+                pass
+
+        # Fallback 2: echo the first rerank candidate to make rerank_top_k
+        # behave identically to "keep argmax" without LLM side-effects.
+        for raw in (user_prompt or "").splitlines():
+            s = raw.strip()
+            if s.startswith("•"):
+                return s.lstrip("•").strip()
+        return ""
+
     @classmethod
     def _cache_key(
         cls,
@@ -112,12 +170,16 @@ class LLMClient:
         system_prompt: str,
         user_prompt: str,
         max_tokens: int,
+        temperature: float | None = None,
     ) -> str:
         raw = "|".join(
             [
                 (provider or "").strip().lower(),
                 (model or "").strip(),
                 str(max_tokens),
+                # temperature меняет детерминированность ответа — разные
+                # значения должны кешироваться раздельно.
+                "t=" + ("default" if temperature is None else f"{temperature:.3f}"),
                 (system_prompt or "").strip(),
                 (user_prompt or "").strip(),
             ]
@@ -131,7 +193,7 @@ class LLMClient:
             if not item:
                 cls._stat_inc("miss")
                 return None
-            if datetime.now(timezone.utc) > item["expires_at"]:
+            if datetime.now(UTC) > item["expires_at"]:
                 cls._response_cache.pop(key, None)
                 cls._stat_inc("miss")
                 return None
@@ -142,7 +204,7 @@ class LLMClient:
     @classmethod
     def _cache_put(cls, key: str, value: str, ttl_sec: int = _CACHE_TTL_SEC) -> None:
         with cls._state_lock:
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             cls._cache_cleanup_ctr += 1
             if cls._cache_cleanup_ctr % _CACHE_CLEANUP_EVERY == 0:
                 expired_keys = [k for k, v in cls._response_cache.items() if now > v.get("expires_at", now)]
@@ -158,7 +220,7 @@ class LLMClient:
                 cls._stat_inc("eviction")
 
     @classmethod
-    def cache_stats(cls) -> Dict[str, int]:
+    def cache_stats(cls) -> dict[str, int]:
         with cls._state_lock:
             cache_size = len(cls._response_cache)
         with cls._stats_lock:
@@ -187,7 +249,7 @@ class LLMClient:
         with cls._state_lock:
             state = cls._circuit_state.get(p) or {}
             opened_until = state.get("opened_until")
-            return bool(opened_until and datetime.now(timezone.utc) < opened_until)
+            return bool(opened_until and datetime.now(UTC) < opened_until)
 
     @classmethod
     def _mark_success(cls, provider: str) -> None:
@@ -202,8 +264,47 @@ class LLMClient:
             state = cls._circuit_state.get(p) or {"failures": 0, "opened_until": None}
             state["failures"] = int(state.get("failures", 0)) + 1
             if state["failures"] >= _CIRCUIT_BREAKER_THRESHOLD:
-                state["opened_until"] = datetime.now(timezone.utc) + timedelta(seconds=_CIRCUIT_BREAKER_RESET_SEC)
+                state["opened_until"] = datetime.now(UTC) + timedelta(seconds=_CIRCUIT_BREAKER_RESET_SEC)
             cls._circuit_state[p] = state
+
+    @staticmethod
+    def _parse_retry_after(headers: Any) -> float | None:
+        """Parse RFC 7231 Retry-After header: delta-seconds or HTTP-date.
+
+        Returns the wait in seconds, or None if absent/unparseable.
+        Clamped to non-negative values; capped upstream to avoid
+        adversarial huge values.
+        """
+        if headers is None:
+            return None
+        raw = None
+        try:
+            raw = headers.get("Retry-After") or headers.get("retry-after")
+        except AttributeError:
+            return None
+        if raw is None:
+            return None
+        raw_s = str(raw).strip()
+        if not raw_s:
+            return None
+        # Case 1: integer delta-seconds
+        try:
+            secs = float(raw_s)
+            return max(0.0, secs)
+        except ValueError:
+            pass
+        # Case 2: HTTP-date (RFC 7231 IMF-fixdate)
+        try:
+            from email.utils import parsedate_to_datetime as _pdt
+            dt = _pdt(raw_s)
+            if dt is None:
+                return None
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=UTC)
+            delta = (dt - datetime.now(UTC)).total_seconds()
+            return max(0.0, delta)
+        except (TypeError, ValueError):
+            return None
 
     # ------------------------------------------------------------------
     # Приватные методы-помощники для complete_text
@@ -233,7 +334,8 @@ class LLMClient:
         system_prompt: str,
         user_prompt: str,
         max_tokens: int,
-    ) -> tuple[str, Dict[str, str], Dict[str, Any]]:
+        temperature: float | None = None,
+    ) -> tuple[str, dict[str, str], dict[str, Any]]:
         """Строит URL, заголовки и payload для конкретного провайдера.
 
         Returns:
@@ -241,17 +343,19 @@ class LLMClient:
         """
         if p == "anthropic":
             url = "https://api.anthropic.com/v1/messages"
-            headers: Dict[str, str] = {
+            headers: dict[str, str] = {
                 "x-api-key": resolved_api_key,
                 "anthropic-version": "2023-06-01",
                 "content-type": "application/json",
             }
-            payload: Dict[str, Any] = {
+            payload: dict[str, Any] = {
                 "model": model,
                 "max_tokens": max_tokens,
                 "system": system_prompt,
                 "messages": [{"role": "user", "content": user_prompt}],
             }
+            if temperature is not None:
+                payload["temperature"] = float(temperature)
         elif p == "openai":
             url = "https://api.openai.com/v1/chat/completions"
             headers = {
@@ -266,6 +370,8 @@ class LLMClient:
                     {"role": "user", "content": user_prompt},
                 ],
             }
+            if temperature is not None:
+                payload["temperature"] = float(temperature)
         elif p == "qwen":
             url = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
             headers = {
@@ -280,6 +386,8 @@ class LLMClient:
                     {"role": "user", "content": user_prompt},
                 ],
             }
+            if temperature is not None:
+                payload["temperature"] = float(temperature)
         elif p == "gigachat":
             url = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
             headers = {
@@ -294,13 +402,18 @@ class LLMClient:
                     {"role": "user", "content": user_prompt},
                 ],
             }
+            if temperature is not None:
+                payload["temperature"] = float(temperature)
         elif p == "ollama":
             url = "http://127.0.0.1:11434/api/chat"
             headers = {"content-type": "application/json"}
+            _options: dict[str, Any] = {"num_predict": max_tokens}
+            if temperature is not None:
+                _options["temperature"] = float(temperature)
             payload = {
                 "model": model,
                 "stream": False,
-                "options": {"num_predict": max_tokens},
+                "options": _options,
                 "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
@@ -330,7 +443,7 @@ class LLMClient:
         host = (urlparse(url).hostname or "").strip()
         try:
             ips_now = _resolve_host_ips(host)
-        except Exception as ex:
+        except (socket.gaierror, socket.herror, OSError) as ex:
             raise FeatureBuildError(
                 f"[error_code=LLM_DNS_RESOLVE_FAILED] stage=llm.request hint=Не удалось разрешить host {host}: {ex}"
             ) from ex
@@ -355,18 +468,34 @@ class LLMClient:
         body = ""
         for attempt_idx in range(attempts):
             try:
-                with _urlreq.urlopen(req, timeout=float(timeout_sec)) as resp:
+                # nosec B310: req is a Request object whose URL prevалидирован
+                # _validate_url_and_dns() — SSRF-allowlist + TOCTOU DNS re-resolve.
+                with _urlreq.urlopen(req, timeout=float(timeout_sec)) as resp:  # nosec B310
                     body = resp.read().decode("utf-8", errors="replace")
                 return body
             except _urlerr.HTTPError as e:
                 _body = e.read().decode("utf-8", errors="replace") if hasattr(e, "read") else str(e)
                 _is_retryable = e.code in retryable_http and attempt_idx < attempts - 1
                 if _is_retryable:
-                    _sleep = backoff_base_sec * (2 ** attempt_idx) + random.uniform(0.0, backoff_jitter_sec)
-                    _log.warning(
-                        "llm retryable http error: provider=%s code=%s attempt=%s/%s sleep=%.2fs",
-                        provider, e.code, attempt_idx + 1, attempts, _sleep,
+                    # Prefer server-advised backoff (RFC 7231 §7.1.3) when present:
+                    # Retry-After may be either delta-seconds or HTTP-date.
+                    _retry_after = LLMClient._parse_retry_after(
+                        getattr(e, "headers", None)
                     )
+                    if _retry_after is not None:
+                        _sleep = min(float(_retry_after), 60.0) + random.uniform(
+                            0.0, backoff_jitter_sec
+                        )
+                        _log.warning(
+                            "llm retry-after honored: provider=%s code=%s attempt=%s/%s retry_after=%.2fs",
+                            provider, e.code, attempt_idx + 1, attempts, _sleep,
+                        )
+                    else:
+                        _sleep = backoff_base_sec * (2 ** attempt_idx) + random.uniform(0.0, backoff_jitter_sec)
+                        _log.warning(
+                            "llm retryable http error: provider=%s code=%s attempt=%s/%s sleep=%.2fs",
+                            provider, e.code, attempt_idx + 1, attempts, _sleep,
+                        )
                     time.sleep(_sleep)
                     continue
                 if e.code in retryable_http:
@@ -392,7 +521,7 @@ class LLMClient:
                 raise FeatureBuildError(
                     f"[error_code=LLM_NETWORK_ERROR] stage=llm.request hint=Проверьте сеть, DNS/прокси и URL провайдера. | {type(_reason).__name__}: {_reason}"
                 )
-            except (TimeoutError, socket.timeout) as e:
+            except TimeoutError as e:
                 if attempt_idx < attempts - 1:
                     _sleep = backoff_base_sec * (2 ** attempt_idx) + random.uniform(0.0, backoff_jitter_sec)
                     _log.warning(
@@ -464,13 +593,33 @@ class LLMClient:
         max_retries: int = 2,
         backoff_base_sec: float = 0.6,
         backoff_jitter_sec: float = 0.25,
+        temperature: float | None = None,
     ) -> str:
-        """Отправляет запрос к LLM-провайдеру и возвращает текст ответа."""
+        """Отправляет запрос к LLM-провайдеру и возвращает текст ответа.
+
+        temperature=None — используется provider default (обычно 1.0 — высокая
+        вариативность). Фиксированное значение (напр. 0.2) даёт детерминированные
+        ответы для задач с одним правильным результатом — нейминг кластеров,
+        классификация, резюмирование.
+
+        Offline режим (ADR-0004): env BRT_LLM_PROVIDER=offline коротит
+        реальную сеть, отдавая детерминированный ответ. Если в CI указан
+        replay-файл BRT_LLM_REPLAY (JSONL), ответ ищется по cache-key;
+        иначе возвращается первый кандидат из user_prompt (для reranker)
+        либо пустая строка.
+        """
+        if LLMClient._offline_enabled():
+            return LLMClient._offline_complete(
+                provider, model, system_prompt, user_prompt, max_tokens, temperature,
+            )
+
         p = (provider or "").strip().lower()
 
         resolved_api_key = LLMClient._decrypt_and_resolve_key(provider, api_key)
 
-        cache_key = LLMClient._cache_key(provider, model, system_prompt, user_prompt, max_tokens)
+        cache_key = LLMClient._cache_key(
+            provider, model, system_prompt, user_prompt, max_tokens, temperature,
+        )
         cached = LLMClient._cache_get(cache_key)
         if cached is not None:
             if LLMClient._is_circuit_open(provider):
@@ -482,7 +631,7 @@ class LLMClient:
             )
 
         url, headers, payload = LLMClient._build_provider_request(
-            p, model, resolved_api_key, system_prompt, user_prompt, max_tokens
+            p, model, resolved_api_key, system_prompt, user_prompt, max_tokens, temperature,
         )
         LLMClient._validate_url_and_dns(url, p, resolved_api_key)
 

@@ -19,7 +19,7 @@ _CUML_UMAP: Optional[bool] = None
 
 def cuda_available() -> bool:
     if hasattr(cuda_available, "_cached"):
-        return bool(getattr(cuda_available, "_cached"))
+        return bool(cuda_available._cached)  # type: ignore[attr-defined]
     try:
         import torch
 
@@ -27,7 +27,7 @@ def cuda_available() -> bool:
     except (ImportError, RuntimeError, AttributeError) as ex:
         _log.debug("cuda_available fallback: %s", ex)
         ok = False
-    setattr(cuda_available, "_cached", bool(ok))
+    cuda_available._cached = bool(ok)  # type: ignore[attr-defined]
     return bool(ok)
 
 

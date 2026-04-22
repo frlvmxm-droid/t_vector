@@ -4,7 +4,7 @@ import pytest
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 
-from ml_training import make_classifier, train_model
+from ml_training import TrainingOptions, make_classifier, train_model
 from app_cluster_pipeline import (
     prepare_inputs,
     build_cluster_role_context,
@@ -34,7 +34,8 @@ def test_train_model_single_class_skips_validation():
         pipe, _, report, labels, cm, extras = train_model(
             X=X, y=y, features=_vec(),
             C=1.0, max_iter=100, balanced=False,
-            test_size=0.2, random_state=42, use_smote=False,
+            test_size=0.2, random_state=42,
+            options=TrainingOptions(use_smote=False),
         )
         assert pipe is not None
     except ValueError as e:
@@ -48,7 +49,8 @@ def test_train_model_two_samples_skips_validation():
     pipe, _, report, labels, cm, extras = train_model(
         X=X, y=y, features=_vec(),
         C=1.0, max_iter=100, balanced=False,
-        test_size=0.5, random_state=0, use_smote=False,
+        test_size=0.5, random_state=0,
+        options=TrainingOptions(use_smote=False),
     )
     assert pipe is not None
 
@@ -59,7 +61,8 @@ def test_train_model_empty_strings_in_X():
     pipe, _, report, labels, cm, extras = train_model(
         X=X, y=y, features=_vec(),
         C=1.0, max_iter=100, balanced=False,
-        test_size=0.2, random_state=42, use_smote=False,
+        test_size=0.2, random_state=42,
+        options=TrainingOptions(use_smote=False),
     )
     assert pipe is not None
 
@@ -72,7 +75,8 @@ def test_train_model_highly_unbalanced_with_balanced_weight():
     pipe, clf_type, report, labels, cm, extras = train_model(
         X=X, y=y, features=_vec(),
         C=1.0, max_iter=200, balanced=True,
-        test_size=0.2, random_state=42, use_smote=False,
+        test_size=0.2, random_state=42,
+        options=TrainingOptions(use_smote=False),
     )
     assert pipe is not None
     # With balanced weights, both classes should appear in predictions
@@ -89,7 +93,8 @@ def test_train_model_parametrized_minority_sizes(n_rare):
     pipe, _, _, _, _, _ = train_model(
         X=X, y=y, features=_vec(),
         C=1.0, max_iter=100, balanced=True,
-        test_size=0.2, random_state=42, use_smote=False,
+        test_size=0.2, random_state=42,
+        options=TrainingOptions(use_smote=False),
     )
     assert pipe is not None
 
@@ -102,7 +107,8 @@ def test_train_model_pure_cyrillic():
     pipe, _, report, labels, cm, _ = train_model(
         X=X, y=y, features=_vec(),
         C=1.0, max_iter=200, balanced=False,
-        test_size=0.25, random_state=0, use_smote=False,
+        test_size=0.25, random_state=0,
+        options=TrainingOptions(use_smote=False),
     )
     assert pipe is not None
     assert pipe.predict(["карта банк"]) in [["банки"], ["страхование"]]
@@ -116,7 +122,8 @@ def test_train_model_mixed_encoding_strings():
     pipe, _, _, _, _, _ = train_model(
         X=X, y=y, features=_vec(),
         C=1.0, max_iter=200, balanced=False,
-        test_size=0.2, random_state=7, use_smote=False,
+        test_size=0.2, random_state=7,
+        options=TrainingOptions(use_smote=False),
     )
     assert pipe is not None
 

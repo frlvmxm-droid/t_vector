@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Утилиты безопасного хранения/чтения API-ключей LLM."""
 from __future__ import annotations
 
@@ -22,7 +21,9 @@ def _snapshot_cipher():
     try:
         fernet = __import__("cryptography.fernet", fromlist=["Fernet"]).Fernet
         return fernet(raw.encode("utf-8"))
-    except Exception:
+    except (ImportError, ValueError):
+        # ImportError: cryptography not installed (optional dep).
+        # ValueError: Fernet raises on malformed base64 key material.
         _log.warning("invalid LLM_SNAPSHOT_KEY; snapshot encryption disabled")
         return None
 

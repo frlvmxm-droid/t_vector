@@ -18,6 +18,7 @@ ml_vectorizers — векторайзеры и фабрики признаков
 from __future__ import annotations
 
 import math
+import os
 import re as _re
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, Union
 
@@ -34,7 +35,15 @@ from config.ml_constants import (
     SBERT_IMPORT_MAX_RETRIES,
 )
 from app_logger import get_logger
+from ml_sbert_bootstrap import (
+    SBERTBuiltinsPatch,
+    patch_torch_and_packaging,
+    safe_import_sentence_transformers,
+)
 import ml_compat
+
+# Backward-compat alias — external tests / utilities still import `_BuiltinsPatch`.
+_BuiltinsPatch = SBERTBuiltinsPatch
 
 _log = get_logger(__name__)
 
@@ -42,108 +51,178 @@ _log = get_logger(__name__)
 SBERT_LOCAL_DIR = APP_ROOT / "sbert_models"
 
 
+# ---------------------------------------------------------------------------
+# pymorphy2 compat-shim для Python 3.13: inspect.getargspec удалён, а
+# pymorphy2 продолжает его вызывать. Мы подменяем его совместимым адаптером.
+# Патч идемпотентный и защищён блокировкой — корректен при конкурентных
+# импортах pymorphy2 из разных потоков.
+# ---------------------------------------------------------------------------
+
+import threading as _threading
+
+_GETARGSPEC_SHIM_LOCK = _threading.Lock()
+_GETARGSPEC_SHIM_INSTALLED = False
+
+
+def _install_getargspec_shim() -> None:
+    """Устанавливает inspect.getargspec как совместимый адаптер getfullargspec.
+
+    Применяется один раз на процесс. После установки НЕ откатывается —
+    pymorphy2 хранит ссылки на MorphAnalyzer, который может вызывать
+    getargspec в любой момент. Возврат к NotImplementedError приведёт к
+    краху pymorphy2 на отложенных операциях.
+    """
+    global _GETARGSPEC_SHIM_INSTALLED
+    if _GETARGSPEC_SHIM_INSTALLED:
+        return
+    with _GETARGSPEC_SHIM_LOCK:
+        if _GETARGSPEC_SHIM_INSTALLED:
+            return
+        import inspect
+        if not hasattr(inspect, "_getargspec_orig"):
+            inspect._getargspec_orig = getattr(inspect, "getargspec", None)
+
+            def _compat_getargspec(func):
+                fs = inspect.getfullargspec(func)
+                return fs.args, fs.varargs, fs.varkw, fs.defaults
+
+            inspect.getargspec = _compat_getargspec
+        _GETARGSPEC_SHIM_INSTALLED = True
+
+
 def _run_sbert_bootstrap_patches() -> None:
     """Применяет compat-патчи в bootstrap-контексте SBERT (не на import модуля)."""
     ml_compat.apply_early_compat_patches()
 
-class _BuiltinsPatch:
-    """Контекстный менеджер — инжектирует имена в builtins и гарантированно убирает их.
 
-    Используется в SBERTVectorizer._ensure_model() для обхода NameError в Python 3.13,
-    когда transformers-модули используют torch/nn в аннотациях без явного импорта.
-
-    Пример::
-
-        with _BuiltinsPatch() as bp:
-            bp.inject('torch')
-            bp.inject('nn')
-            from sentence_transformers import SentenceTransformer
-            model = SentenceTransformer(...)
-        # builtins очищены гарантированно, даже при исключении
-    """
-
-    def __init__(self):
-        self._injected: list = []
-
-    # ------------------------------------------------------------------
-    def inject(self, name: str) -> bool:
-        """Ищет *name* в torch-пакете и добавляет в builtins.
-
-        Возвращает True при успехе. Имя запоминается для удаления в __exit__.
-        Если имя уже есть в builtins — ничего не делает и возвращает True.
-        """
-        import builtins as _b
-        if hasattr(_b, name):
-            return True
-        import sys as _s
-        import types as _tp
-        if name in _s.modules:
-            setattr(_b, name, _s.modules[name])
-            self._injected.append(name)
-            return True
-        try:
-            import importlib as _il
-            _direct = _il.import_module(name)
-            setattr(_b, name, _direct)
-            self._injected.append(name)
-            return True
-        except ImportError:
-            pass  # прямой import не найден — пробуем источники из torch.*
-            _sources = []
-            try:
-                import torch as _t
-                _sources.append(_t)
-            except ImportError:
-                pass  # torch недоступен — остаются только уже импортированные модули/заглушка
-            try:
-                import torch.nn as _tnn; _sources.append(_tnn)
-            except ImportError:
-                pass  # подмодуль недоступен — собираем то, что есть
-            try:
-                import torch.optim as _topt; _sources.append(_topt)
-            except ImportError:
-                pass  # подмодуль недоступен — собираем то, что есть
-            try:
-                import torch.optim.lr_scheduler as _tlrs; _sources.append(_tlrs)
-            except ImportError:
-                pass  # подмодуль недоступен — собираем то, что есть
-            for _src in _sources:
-                if hasattr(_src, name):
-                    setattr(_b, name, getattr(_src, name))
-                    self._injected.append(name)
-                    return True
-        except (ImportError, AttributeError):
-            pass  # torch не установлен или API изменился — идём к SimpleNamespace fallback
-        # Крайний случай: заглушка SimpleNamespace.
-        # ПРЕДУПРЕЖДЕНИЕ: если transformers действительно использует это имя
-        # не как аннотацию типа, а как реальный объект — будет AttributeError.
-        import types as _tp
-        _log.warning(
-            "[ml_core] builtins.%s не найден — инжектирован SimpleNamespace-stub. "
-            "Если transformers упадёт с AttributeError — обновите torch.",
-            name,
-        )
-        setattr(_b, name, _tp.SimpleNamespace())
-        self._injected.append(name)
-        return True
-
-    # ------------------------------------------------------------------
-    def __enter__(self) -> "_BuiltinsPatch":
-        return self
-
-    def __exit__(self, *_exc_info) -> bool:
-        """Удаляет все инжектированные имена из builtins."""
-        try:
-            import builtins as _b
-            for _name in self._injected:
-                if hasattr(_b, _name):
-                    delattr(_b, _name)
-        except (AttributeError, TypeError):
-            pass  # builtins уже не содержит этого атрибута — ничего очищать не нужно
-        return False  # не подавляем исключение
+# _BuiltinsPatch / SBERTBuiltinsPatch — реализация вынесена в ml_sbert_bootstrap.
+# Здесь оставлен только backward-compat алиас (установлен в блоке импортов выше).
 
 
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Опциональное встраивание весов SBERT-модели в .joblib bundle.
+#
+# По умолчанию веса модели НЕ сериализуются — это осознанное решение, так как
+# bundle может вырасти до 2 GB и более. Включается флагом embed_weights=True:
+# тогда веса упаковываются в tar.gz и складываются в поле _model_archive.
+#
+# Десериализованный vectorizer на первом transform() распаковывает архив в
+# локальный кэш (~/.classification_tool/sbert_embedded/<sha16>/) и подгружает
+# SentenceTransformer из локальной папки, минуя HuggingFace-кэш и сеть. Это
+# обеспечивает airgapped-deploy из единого .joblib-файла.
+# ---------------------------------------------------------------------------
+
+# Локальный кэш распакованных встроенных SBERT-весов (переиспользуется между
+# сессиями; ключ — sha256 архива, распакованный один раз)
+_EMBEDDED_SBERT_CACHE_DIR = APP_ROOT / ".sbert_embedded"
+# Порог предупреждения при упаковке больших моделей
+_EMBEDDED_WEIGHTS_WARN_BYTES = 500 * 1024 * 1024  # 500 MB
+
+
+def _serialize_st_model(model: Any, log_cb: Optional[Callable[[str], None]] = None) -> Optional[bytes]:
+    """Упаковывает SentenceTransformer в in-memory tar.gz (веса + config).
+
+    Использует SentenceTransformer.save(dir) — стандартный формат HuggingFace.
+    Возвращает None если упаковка невозможна (например, модель не загружена).
+    """
+    if model is None:
+        return None
+    import io as _io
+    import tarfile as _tar
+    import tempfile as _tmp
+    with _tmp.TemporaryDirectory(prefix="brt_sbert_dump_") as tmp_dir:
+        try:
+            model.save(tmp_dir)
+        except Exception as exc:  # noqa: BLE001 — ST.save() may raise arbitrary IO/transformers errors
+            _log.warning("SentenceTransformer.save() failed: %s", exc)
+            return None
+        buf = _io.BytesIO()
+        with _tar.open(fileobj=buf, mode="w:gz") as tar:
+            tar.add(tmp_dir, arcname=".")
+        data = buf.getvalue()
+    if log_cb and len(data) > _EMBEDDED_WEIGHTS_WARN_BYTES:
+        log_cb(
+            f"[SBERT] ⚠️ Встроенные веса: {len(data) // (1024 * 1024)} МБ — "
+            f"bundle будет соответствующего размера"
+        )
+    return data
+
+
+def _extract_embedded_st_model(data: bytes) -> Any:
+    """Распаковывает tar.gz с весами в локальный кэш и возвращает путь к папке.
+
+    Путь детерминирован по sha256 содержимого — повторная распаковка
+    одного и того же архива не выполняется.
+    """
+    import hashlib as _hash
+    import io as _io
+    import pathlib as _pl
+    import tarfile as _tar
+    digest = _hash.sha256(data).hexdigest()[:16]
+    target = _EMBEDDED_SBERT_CACHE_DIR / digest
+    marker = target / ".extracted_ok"
+    if marker.exists():
+        return target
+    target.mkdir(parents=True, exist_ok=True)
+    # Bundle source — joblib model, защищённый SHA-256 TrustStore (model_loader.py).
+    # Дополнительный пояс безопасности: фильтр Python 3.12+ `filter='data'`
+    # отвергает abs paths, .. в путях и symlinks (CVE-2007-4559 / Zip Slip).
+    # На 3.11 fallback — ручная проверка _tar_safe_members.
+    with _tar.open(fileobj=_io.BytesIO(data), mode="r:gz") as tar:
+        try:
+            tar.extractall(target, filter="data")  # py3.12+
+        except TypeError:
+            tar.extractall(target, members=_tar_safe_members(tar, target))
+    marker.touch()
+    return target
+
+
+def _tar_safe_members(tar: Any, target: Any) -> Any:
+    """Фильтрует tar-членов: запрещает abs paths, '..' и symlinks/hardlinks."""
+    import pathlib as _pl
+    target_resolved = _pl.Path(target).resolve()
+    for member in tar.getmembers():
+        if member.islnk() or member.issym():
+            raise ValueError(f"tar contains link member: {member.name!r}")
+        member_path = (target_resolved / member.name).resolve()
+        if not str(member_path).startswith(str(target_resolved)):
+            raise ValueError(f"tar member escapes target: {member.name!r}")
+        yield member
+
+
+# ---------------------------------------------------------------------------
+# Общие pickling-helpers для SBERT-классов (устраняют DRY-дублирование
+# __getstate__ / __setstate__ между SBERTVectorizer и PerFieldSBERTVectorizer).
+# ---------------------------------------------------------------------------
+
+# Атрибуты, которые всегда обнуляются при pickling (не сериализуемые callbacks)
+_SBERT_NONPICKLE_COMMON = ("log_cb", "progress_cb")
+
+
+def _sbert_make_state(obj_dict: Dict[str, Any], *model_attrs: str) -> Dict[str, Any]:
+    """Формирует сериализуемый snapshot: обнуляет callbacks и все ``model_attrs``."""
+    state = obj_dict.copy()
+    for attr in _SBERT_NONPICKLE_COMMON:
+        if attr in state:
+            state[attr] = None
+    for attr in model_attrs:
+        if attr in state:
+            state[attr] = None
+    return state
+
+
+def _sbert_restore_defaults(obj: Any, *model_attrs: str, **defaults: Any) -> None:
+    """Восстанавливает callbacks, model-поля в None и backfill missing атрибутов."""
+    for attr in _SBERT_NONPICKLE_COMMON:
+        setattr(obj, attr, None)
+    for attr in model_attrs:
+        setattr(obj, attr, None)
+    for attr, default in defaults.items():
+        if not hasattr(obj, attr):
+            setattr(obj, attr, default)
+
 
 class SBERTVectorizer:
     """
@@ -152,12 +231,24 @@ class SBERTVectorizer:
     fit()       — проверяет кэш, при необходимости скачивает, загружает в память.
     transform() — кодирует тексты батчами с прогрессом через log_cb / progress_cb.
 
-    Модель НЕ сериализуется в .joblib (только имя + batch_size).
-    При загрузке модели из .joblib — SBERT автоматически подгружается из кэша.
+    Сериализация:
+      По умолчанию (``embed_weights=False``) в .joblib сохраняются ТОЛЬКО имя
+      модели, batch_size, device, prefix-таблица. Сами веса (~400 MB – 2 GB)
+      НЕ пиклятся — чтобы bundle оставался разумного размера. При загрузке
+      SBERTVectorizer подгружает веса из локального кэша HuggingFace
+      (SBERT_LOCAL_DIR / cache_dir) или скачивает заново.
+
+      С ``embed_weights=True`` веса упаковываются в tar.gz и сохраняются
+      прямо в bundle. При загрузке архив распаковывается в локальный кэш
+      (APP_ROOT/.sbert_embedded/<hash>/), SentenceTransformer создаётся из
+      этой папки — сеть и внешний HF-кэш не нужны. Подходит для airgapped-
+      деплоев, но увеличивает размер bundle на размер модели.
 
     Параметры:
-        log_cb      — callback(str): вызывается с текстовыми строками прогресса
-        progress_cb — callback(float, str): вызывается с (%, статус) как у ui_prog
+        log_cb         — callback(str): вызывается с текстовыми строками прогресса
+        progress_cb    — callback(float, str): вызывается с (%, статус) как у ui_prog
+        embed_weights  — True: упаковать веса в bundle (airgapped-friendly,
+                         больший размер). False (по умолч.): только имя модели.
     """
 
     def __init__(
@@ -169,6 +260,7 @@ class SBERTVectorizer:
         cache_dir: Optional[Any] = None,
         device: str = "auto",
         progress_range: Tuple[float, float] = (78.0, 90.0),
+        embed_weights: bool = False,
     ):
         self.model_name = model_name
         self.batch_size = batch_size
@@ -182,7 +274,13 @@ class SBERTVectorizer:
         # Передаётся снаружи, чтобы не захардкоживать 78..90% для разных сценариев
         # (обучение, кластеризация, apply).
         self.progress_range = progress_range
+        # embed_weights: если True — веса модели упаковываются в bundle при
+        # pickling (см. _serialize_st_model / _extract_embedded_st_model).
+        self.embed_weights = embed_weights
         self._model = None  # не сериализуем
+        # Архив весов (tar.gz bytes) — заполняется только при pickling с
+        # embed_weights=True, используется при _ensure_model() после unpickle.
+        self._model_archive: Optional[bytes] = None
 
     # --- sklearn-compatible interface ---
 
@@ -283,100 +381,14 @@ class SBERTVectorizer:
             self.log_cb(msg)
 
     def _patch_torch_and_packaging(self) -> None:
-        """Патч 1+2: torch.__version__ и packaging.version.parse для Python 3.13.
+        """Делегирует patch_torch_and_packaging из ml_sbert_bootstrap (см. модуль)."""
+        patch_torch_and_packaging()
 
-        torch.__version__ может быть None на некоторых сборках, что ломает
-        packaging.version.parse() при импорте transformers. Патч идемпотентен
-        (проверяет _none_patched флаг перед применением).
-        """
-        try:
-            import sys as _sys
-            _torch_mod = _sys.modules.get("torch")
-            if _torch_mod is not None and getattr(_torch_mod, "__version__", None) is None:
-                # transformers requires >= 2.4 — "0.0.0" would make is_torch_available()
-                # return False and leave AutoModel as None → TypeError on __call__.
-                try:
-                    import importlib.metadata as _imeta
-                    _torch_mod.__version__ = _imeta.version("torch")
-                except (ImportError, Exception):  # PackageNotFoundError varies by Python version
-                    _torch_mod.__version__ = "2.4.0"
-            from packaging import version as _pv
-            if not getattr(_pv, "_none_patched", False):
-                _orig_parse = _pv.parse
-                def _safe_parse(v, *_a, **_kw):
-                    return _orig_parse("0.0.0" if v is None else v, *_a, **_kw)
-                _pv.parse = _safe_parse
-                _OrigVer = _pv.Version
-                class _SafeVersion(_OrigVer):
-                    def __init__(self, version):
-                        super().__init__("0.0.0" if version is None else version)
-                _pv.Version = _SafeVersion
-                _pv._none_patched = True
-                _log.warning(
-                    "[ml_core] packaging.version.parse/Version глобально пропатчены "
-                    "(torch.__version__ == None — см. SBERTVectorizer._patch_torch_and_packaging). "
-                    "Патч применяется один раз и идемпотентен.",
-                )
-        except (ImportError, AttributeError) as _patch_e:
-            _log.debug("_patch_torch_and_packaging: non-critical patch failed: %s", _patch_e)
-
-    def _load_sentence_transformer(self, bp: "_BuiltinsPatch") -> type:
-        """Патч 3: загружает SentenceTransformer с retry при NameError (Python 3.13).
-
-        Некоторые файлы transformers используют torch/nn/LRScheduler в аннотациях
-        без импорта — Python 3.13 падает с NameError. Стратегия: retry-цикл с
-        автоинжекцией каждого недостающего имени в builtins через _BuiltinsPatch.
-        bp — активный контекстный менеджер; очистка builtins выполняется в его __exit__.
-        """
-        def _clear_broken_tf_cache() -> None:
-            """Удаляет сломанные transformers/sentence_transformers из sys.modules.
-
-            Нужно если is_torch_available() был закэширован как False
-            (из-за torch.__version__==None при первом импорте).
-            """
-            import sys as _s
-            for _k in list(_s.modules.keys()):
-                if _k.startswith('sentence_transformers.') or _k == 'sentence_transformers':
-                    _s.modules.pop(_k, None)
-                elif _k.startswith('transformers.') or _k == 'transformers':
-                    _s.modules.pop(_k, None)
-
-        bp.inject('torch')
-        bp.inject('nn')
-
-        _SentenceTransformer = None
-        for _attempt in range(SBERT_IMPORT_MAX_RETRIES):
-            try:
-                from sentence_transformers import SentenceTransformer as _SentenceTransformer
-                break
-            except ModuleNotFoundError as _mnfe:
-                if 'sentence_transformers' in str(_mnfe) or 'sentence-transformers' in str(_mnfe):
-                    raise ImportError(
-                        "Пакет sentence-transformers не установлен.\n"
-                        "Установите: pip install sentence-transformers\n"
-                        "Или нажмите кнопку «Установить» в разделе SBERT."
-                    )
-                raise ImportError(
-                    f"Ошибка импорта зависимости sentence-transformers: {_mnfe}\n"
-                    "Попробуйте: pip install sentence-transformers transformers --upgrade"
-                )
-            except NameError as _ne:
-                _m = _re.search(r"name '(\w+)' is not defined", str(_ne))
-                if not _m:
-                    raise ImportError(f"NameError при импорте sentence-transformers: {_ne}")
-                bp.inject(_m.group(1))
-                _clear_broken_tf_cache()
-            except ImportError as _ie:
-                raise ImportError(
-                    f"Ошибка загрузки sentence-transformers: {_ie}\n"
-                    "Попробуйте: pip install sentence-transformers transformers --upgrade"
-                )
-        else:
-            raise ImportError(
-                f"Не удалось загрузить sentence-transformers после {SBERT_IMPORT_MAX_RETRIES} попыток.\n"
-                "Попробуйте: pip install transformers --upgrade"
-            )
-        return _SentenceTransformer
+    def _load_sentence_transformer(self, bp: "SBERTBuiltinsPatch") -> type:
+        """Делегирует safe_import_sentence_transformers из ml_sbert_bootstrap."""
+        return safe_import_sentence_transformers(
+            bp, max_retries=SBERT_IMPORT_MAX_RETRIES, log_cb=self.log_cb,
+        )
 
     def _resolve_device(self) -> Optional[str]:
         """Определяет аргумент device для SentenceTransformer по self.device.
@@ -407,7 +419,7 @@ class SBERTVectorizer:
                     return "cuda"
                 self._log("[SBERT] ⚠️ CUDA запрошена, но недоступна — переключаюсь на CPU")
                 return "cpu"
-            except Exception as _e:
+            except (ImportError, RuntimeError, AttributeError) as _e:
                 self._log(f"[SBERT] ⚠️ Ошибка инициализации torch ({_e}) — используется CPU")
                 return "cpu"
         # "auto": SentenceTransformer сам выбирает устройство (CUDA → CPU)
@@ -476,6 +488,23 @@ class SBERTVectorizer:
         with _BuiltinsPatch() as _bp:
             SentenceTransformer = self._load_sentence_transformer(_bp)
 
+            # --- 0. Встроенные веса (embed_weights=True при сохранении) ---
+            archive = getattr(self, "_model_archive", None)
+            if archive:
+                target = _extract_embedded_st_model(archive)
+                self._log(f"[SBERT] Использую встроенные веса из {target} ✅")
+                if self.progress_cb:
+                    self.progress_cb(64.0, "SBERT: загрузка встроенных весов…")
+                device = self._resolve_device()
+                self._model = SentenceTransformer(str(target), device=device)
+                self._log(
+                    f"[SBERT] Модель загружена ✅ "
+                    f"(dim={self._model.get_sentence_embedding_dimension()})"
+                )
+                if self.progress_cb:
+                    self.progress_cb(76.0, "SBERT готов, обучаю классификатор…")
+                return
+
             # --- 1. Проверить кэш HuggingFace ---
             cached = self._check_cache()
             if cached:
@@ -513,8 +542,8 @@ class SBERTVectorizer:
         except EnvironmentError:
             # Нормальная ситуация: модель не в кэше (LocalEntryNotFoundError → EnvironmentError)
             return False
-        except Exception as ex:
-            # Неожиданная ошибка (права доступа, диск переполнен и т.д.) — логируем
+        except (OSError, ImportError, RuntimeError) as ex:
+            # Неожиданная ошибка (права доступа, диск переполнен, HF hub недоступен) — логируем
             self._log(f"[SBERT] ⚠️ Ошибка при проверке кэша: {ex}")
             return False
 
@@ -548,29 +577,38 @@ class SBERTVectorizer:
                 ignore_patterns=["*.h5", "*.ot", "flax_model*", "tf_model*",
                                   "rust_model*", "onnx*"],
             )
-        except Exception as e:
-            self._log(f"[SBERT] ⚠️ Ошибка при скачивании: {e}")
+        except (OSError, ValueError, RuntimeError) as e:
+            # Expected failure modes:
+            #   OSError — network / disk / permission / connection reset
+            #   ValueError — malformed repo id or missing required files
+            #   RuntimeError — HfHubHTTPError (404 / 401 / 403) subclasses this
+            # SentenceTransformer will retry the download on its own below,
+            # so we record the reason and fall through.
+            self._log(f"[SBERT] ⚠️ Ошибка при скачивании ({type(e).__name__}): {e}")
             self._log(f"[SBERT] Попытка загрузить напрямую через SentenceTransformer…")
         finally:
             _stop.set()
 
-    # --- serialization: не сохраняем веса модели в joblib ---
+    # --- serialization ---
 
     def __getstate__(self):
-        state = self.__dict__.copy()
-        state["_model"] = None
-        state["log_cb"] = None
-        state["progress_cb"] = None
+        state = _sbert_make_state(self.__dict__, "_model")
+        # embed_weights: пакуем веса в tar.gz, если модель уже загружена
+        if getattr(self, "embed_weights", False) and self._model is not None:
+            archive = _serialize_st_model(self._model, log_cb=self.log_cb)
+            state["_model_archive"] = archive
+        else:
+            state["_model_archive"] = getattr(self, "_model_archive", None)
         return state
 
     def __setstate__(self, state):
         self.__dict__.update(state)
-        self._model = None
-        self.log_cb = None
-        self.progress_cb = None
-        # Совместимость со старыми моделями без поля device
-        if not hasattr(self, "device"):
-            self.device = "auto"
+        _sbert_restore_defaults(
+            self, "_model",
+            device="auto",
+            embed_weights=False,
+            _model_archive=None,
+        )
 
     @staticmethod
     def is_available() -> bool:
@@ -677,6 +715,7 @@ class PerFieldSBERTVectorizer(BaseEstimator, TransformerMixin):
         cache_dir: Optional[Any] = None,
         device: str = "auto",
         progress_range: Tuple[float, float] = (78.0, 90.0),
+        embed_weights: bool = False,
     ):
         self.model_name = model_name
         self.base_weights = base_weights or {}
@@ -687,6 +726,10 @@ class PerFieldSBERTVectorizer(BaseEstimator, TransformerMixin):
         self.cache_dir = cache_dir
         self.device = device
         self.progress_range = progress_range
+        # embed_weights пробрасывается во внутренний SBERTVectorizer — см.
+        # _ensure_sbert(). При pickling этот флаг также читается __getstate__
+        # для упаковки весов, если внутренний _sbert уже был загружен.
+        self.embed_weights = embed_weights
         # Заполняется при fit()
         self._active: List[Tuple[str, str, int]] = []
         self._embedding_dim: Optional[int] = None
@@ -737,7 +780,13 @@ class PerFieldSBERTVectorizer(BaseEstimator, TransformerMixin):
                 cache_dir=str(self.cache_dir or SBERT_LOCAL_DIR),
                 device=self.device,
                 progress_range=self.progress_range,
+                embed_weights=getattr(self, "embed_weights", False),
             )
+            # Если в self._model_archive лежит tar.gz с embedded-весами,
+            # прокидываем его во внутренний SBERTVectorizer до _ensure_model().
+            archive = getattr(self, "_model_archive", None)
+            if archive:
+                self._sbert._model_archive = archive
         else:
             # Восстанавливаем колбэки (сбрасываются при десериализации)
             self._sbert.log_cb = self.log_cb
@@ -810,31 +859,52 @@ class PerFieldSBERTVectorizer(BaseEstimator, TransformerMixin):
 
             field_matrices.append(field_embs)
 
-        return np.hstack(field_matrices)
+        stacked = np.hstack(field_matrices)
+
+        # Финальная L2-норма после применения per-field весов. Без этого
+        # шага поле с весом w=3 раздувает норму конкатенированного вектора в
+        # √(w²) раз относительно полей с w=1 → косинусное сравнение между
+        # документами с разной комбинацией непустых секций теряет смысл
+        # (LinearSVC и KMeans перестают быть инвариантны к магнитуде).
+        if self.normalize:
+            stacked_norms = np.linalg.norm(stacked, axis=1, keepdims=True)
+            stacked_norms = np.where(stacked_norms > 0, stacked_norms, 1.0)
+            stacked = stacked / stacked_norms
+
+        return stacked
 
     def fit_transform(self, X: List[str], y: Any = None) -> np.ndarray:
         return self.fit(X, y).transform(X)
 
     # ------------------------------------------------------------------
-    # Сериализация: не сохраняем веса модели в joblib
+    # Сериализация (см. общие _sbert_make_state / _sbert_restore_defaults).
+    # По умолчанию веса не сохраняются; при embed_weights=True tar.gz-архив
+    # модели копируется из внутреннего SBERTVectorizer.
     # ------------------------------------------------------------------
 
     def __getstate__(self):
-        state = self.__dict__.copy()
-        state["_sbert"] = None
-        state["log_cb"] = None
-        state["progress_cb"] = None
+        state = _sbert_make_state(self.__dict__, "_sbert")
+        archive: Optional[bytes] = None
+        if getattr(self, "embed_weights", False) and self._sbert is not None \
+                and self._sbert._model is not None:
+            archive = _serialize_st_model(self._sbert._model, log_cb=self.log_cb)
+        # fallback: re-use уже имеющийся архив, если он был загружен ранее
+        if archive is None:
+            archive = getattr(self, "_model_archive", None)
+            if archive is None and self._sbert is not None:
+                archive = getattr(self._sbert, "_model_archive", None)
+        state["_model_archive"] = archive
         return state
 
     def __setstate__(self, state):
         self.__dict__.update(state)
-        self._sbert = None
-        self.log_cb = None
-        self.progress_cb = None
-        if not hasattr(self, "device"):
-            self.device = "auto"
-        if not hasattr(self, "normalize"):
-            self.normalize = True
+        _sbert_restore_defaults(
+            self, "_sbert",
+            device="auto",
+            normalize=True,
+            embed_weights=False,
+            _model_archive=None,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1272,6 +1342,10 @@ class Lemmatizer(BaseEstimator, TransformerMixin):
         self._available = None
         self._backend: str = ""   # "pymorphy3" | "pymorphy2" | ""
         self.include_pos = bool(include_pos)
+        # Per-instance LRU for morph.parse(token); dominant hot path — same
+        # token recurs thousands of times across a corpus.
+        self._lemma_cache: Dict[Tuple[str, bool], str] = {}
+        self._LEMMA_CACHE_CAP = 50_000
 
     def _get_morph(self):
         if self._available is False:
@@ -1287,26 +1361,21 @@ class Lemmatizer(BaseEstimator, TransformerMixin):
             return self._morph
         except ImportError:
             pass
-        except Exception:
+        except (OSError, RuntimeError, AttributeError, ValueError):
+            # Библиотека установлена, но инициализация не удалась (повреждённый словарь,
+            # несовместимая версия). Не фатально — пробуем pymorphy2.
             pass
         # Fallback: pymorphy2 (legacy; требует compat-патча на Python 3.13).
         try:
-            import inspect
-            # pymorphy2 ожидает старый inspect.getargspec → 4-элементный tuple.
-            # На Python 3.13 переопределяем совместимым адаптером.
-            if not hasattr(inspect, "_getargspec_orig"):
-                inspect._getargspec_orig = getattr(inspect, "getargspec", None)
-                def _compat_getargspec(func):
-                    fs = inspect.getfullargspec(func)
-                    return fs.args, fs.varargs, fs.varkw, fs.defaults
-                inspect.getargspec = _compat_getargspec
+            _install_getargspec_shim()
             import pymorphy2
             self._morph = pymorphy2.MorphAnalyzer()
             self._available = True
             self._backend = "pymorphy2"
         except ImportError:
             self._available = False
-        except Exception:
+        except (OSError, RuntimeError, AttributeError, ValueError):
+            # См. комментарий выше для pymorphy3 — лемматизация опциональна.
             self._available = False
         return self._morph
 
@@ -1317,6 +1386,33 @@ class Lemmatizer(BaseEstimator, TransformerMixin):
         self.is_active_: bool = bool(self._available)
         self.backend_: str = self._backend   # "pymorphy3" | "pymorphy2" | ""
         return self
+
+    def _lemma_for_token(self, token: str) -> str:
+        """Cached per-token lookup. Key includes include_pos so POS-tagged and
+        plain variants share no cache lines."""
+        include_pos = bool(getattr(self, "include_pos", False))
+        cache = self._lemma_cache
+        key = (token, include_pos)
+        cached = cache.get(key)
+        if cached is not None:
+            return cached
+        morph = self._get_morph()
+        if morph is None:
+            return token
+        parsed = morph.parse(token)
+        if parsed:
+            lemma = parsed[0].normal_form
+            if include_pos:
+                _pos = getattr(parsed[0].tag, "POS", None)
+                if _pos:
+                    lemma = f"{lemma}_{_pos}"
+        else:
+            lemma = token.lower()
+        # Cap cache to avoid unbounded growth on huge corpora.
+        if len(cache) >= self._LEMMA_CACHE_CAP:
+            cache.clear()
+        cache[key] = lemma
+        return lemma
 
     def _lemmatize_text(self, text: str) -> str:
         morph = self._get_morph()
@@ -1334,17 +1430,7 @@ class Lemmatizer(BaseEstimator, TransformerMixin):
             last_end = 0
             for m in self._TOKEN_RE.finditer(line):
                 result.append(line[last_end:m.start()])   # не-токен (пробелы, пунктуация)
-                token = m.group()
-                parsed = morph.parse(token)
-                if parsed:
-                    lemma = parsed[0].normal_form
-                    if getattr(self, "include_pos", False):
-                        _pos = getattr(parsed[0].tag, "POS", None)
-                        if _pos:
-                            lemma = f"{lemma}_{_pos}"
-                else:
-                    lemma = token.lower()
-                result.append(lemma)
+                result.append(self._lemma_for_token(m.group()))
                 last_end = m.end()
             result.append(line[last_end:])
             lines_out.append("".join(result))
@@ -1359,10 +1445,16 @@ class Lemmatizer(BaseEstimator, TransformerMixin):
     def __getstate__(self):
         state = self.__dict__.copy()
         state["_morph"] = None      # MorphAnalyzer не сериализуем (ни v2, ни v3)
+        state["_lemma_cache"] = {}  # cache is per-process scratch, not persisted
         return state
 
     def __setstate__(self, state):
         self.__dict__.update(state)
+        # Backfill cache if loading a pre-perf-optimization model bundle.
+        if "_lemma_cache" not in self.__dict__ or self._lemma_cache is None:
+            self._lemma_cache = {}
+        if "_LEMMA_CACHE_CAP" not in self.__dict__:
+            self._LEMMA_CACHE_CAP = 50_000
         # _morph будет восстановлен при первом вызове _get_morph()
 
 
@@ -1494,6 +1586,61 @@ class MetaFeatureExtractor(BaseEstimator, TransformerMixin):
             math.log1p(all_words),
             float(n_fields_present),
         ]
+
+
+def _dhondt_allocate(
+    total_budget: int,
+    weights: Dict[str, int],
+    floor: int = 0,
+) -> Dict[str, int]:
+    """Пропорциональное распределение *total_budget* между ключами *weights*.
+
+    Используется метод д’Ондта (highest averages): на каждом шаге юнит бюджета
+    отдаётся ключу с максимальным частным ``w / (seats + 1)``. Ключи с нулевым
+    весом получают нулевую аллокацию.
+
+    Перед итерациями каждый ключ с ``weight > 0`` получает базовый *floor*,
+    если бюджет это позволяет. Если ``floor * n_active > total_budget`` —
+    ``floor`` клампится до ``total_budget // n_active``. Остаток раздаётся
+    методом д’Ондта.
+
+    Свойства:
+      * ``sum(result.values()) == total_budget`` (пока хватает бюджета).
+      * Для равных весов аллокация симметрична (отличие не более 1).
+      * Ключи с ``weight <= 0`` получают ``0``.
+    """
+    # Сохраняем исходный порядок ключей для детерминированности.
+    alloc: Dict[str, int] = {k: 0 for k in weights}
+    active = [k for k, w in weights.items() if w > 0]
+    if not active or total_budget <= 0:
+        return alloc
+
+    n_active = len(active)
+    base_floor = min(max(0, floor), total_budget // n_active)
+    for k in active:
+        alloc[k] = base_floor
+    remaining = total_budget - base_floor * n_active
+    if remaining <= 0:
+        return alloc
+
+    import heapq
+    heap: List[Tuple[float, int, str, int]] = []
+    for idx, k in enumerate(active):
+        # Начальное seats=0; частное = weights[k] / 1.
+        # Используем (-quotient, idx, key, seats) чтобы при равных частных
+        # стабильно побеждал меньший индекс.
+        heapq.heappush(heap, (-float(weights[k]), idx, k, 0))
+
+    for _ in range(remaining):
+        neg_q, idx, k, seats = heapq.heappop(heap)
+        alloc[k] += 1
+        new_seats = seats + 1
+        heapq.heappush(
+            heap,
+            (-float(weights[k]) / (new_seats + 1), idx, k, new_seats),
+        )
+
+    return alloc
 
 
 class PerFieldVectorizer(BaseEstimator, TransformerMixin):
@@ -1632,8 +1779,6 @@ class PerFieldVectorizer(BaseEstimator, TransformerMixin):
             active = [(wk, tag, 1) for wk, tag in self._FIELDS]
         self._active = active
 
-        total_w = max(1, sum(w for _, _, w in active))
-
         # Собираем тексты по полям за один проход
         field_texts: Dict[str, List[str]] = {tag: [] for _, tag, _ in active}
         for text in X:
@@ -1641,45 +1786,54 @@ class PerFieldVectorizer(BaseEstimator, TransformerMixin):
             for _, tag, _ in active:
                 field_texts[tag].append(parsed.get(tag, ""))
 
-        # Распределяем бюджет признаков пропорционально весам.
-        # Проблема: max(floor, proportional) может превысить max_features на N_fields × floor.
-        # Решение: вычислить «сырые» аллокации, затем масштабировать вниз если сумма > max_features.
+        # Распределяем бюджет признаков пропорционально весам методом д’Ондта:
+        # строго сохраняем суммарный бюджет и получаем справедливое распределение
+        # (остатки раздаются ключам с наибольшим частным w/(seats+1)).
         char_budget = self.max_features
         word_budget = max(1, self.max_features // 3)
         _MIN_CHAR, _MIN_WORD = 200, 100     # абсолютные минимумы на поле
 
-        raw_char = {tag: max(_MIN_CHAR, int(char_budget * w / total_w)) for _, tag, w in active}
-        raw_word = {tag: max(_MIN_WORD, int(word_budget * w / total_w)) for _, tag, w in active}
-
-        # Масштабируем вниз если сумма превысила бюджет
-        sum_char = sum(raw_char.values())
-        if sum_char > char_budget:
-            scale = char_budget / sum_char
-            raw_char = {tag: max(_MIN_CHAR, int(v * scale)) for tag, v in raw_char.items()}
-        sum_word = sum(raw_word.values())
-        if sum_word > word_budget:
-            scale = word_budget / sum_word
-            raw_word = {tag: max(_MIN_WORD, int(v * scale)) for tag, v in raw_word.items()}
+        _weights = {tag: w for _, tag, w in active}
+        raw_char = _dhondt_allocate(char_budget, _weights, floor=_MIN_CHAR)
+        raw_word = _dhondt_allocate(word_budget, _weights, floor=_MIN_WORD)
 
         # Обучаем пары (char + word) TF-IDF для каждого активного поля.
         # Поля, у которых все тексты пустые, исключаем из _active.
-        self._char_vecs = {}
-        self._word_vecs = {}
-        confirmed_active: List[Tuple[str, str, int]] = []
+        # Каждое поле независимо — параллелим через joblib threading backend,
+        # т.к. TfidfVectorizer.fit отпускает GIL внутри numpy/scipy.
+        from joblib import Parallel, delayed
+
+        eligible: List[Tuple[str, str, int]] = []
         for wk, tag, w in active:
             texts_for_tag = field_texts[tag]
-            if not any(t.strip() for t in texts_for_tag):
-                # Нет ни одного непустого документа — пропускаем поле
-                continue
-            max_char = raw_char[tag]
-            max_word = raw_word[tag]
-            cv, wv = self._make_tfidf_pair(max_char, max_word)
+            if any(t.strip() for t in texts_for_tag):
+                eligible.append((wk, tag, w))
+
+        def _fit_one(wk: str, tag: str, w: int):
+            texts_for_tag = field_texts[tag]
+            cv, wv = self._make_tfidf_pair(raw_char[tag], raw_word[tag])
             try:
                 cv.fit(texts_for_tag)
                 wv.fit(texts_for_tag)
             except ValueError:
-                # empty vocabulary — например, все тексты состоят из стоп-слов
+                return None
+            return (wk, tag, w, cv, wv)
+
+        n_jobs = min(len(eligible), max(1, (os.cpu_count() or 1)))
+        if n_jobs > 1 and len(eligible) > 1:
+            results = Parallel(n_jobs=n_jobs, backend="threading")(
+                delayed(_fit_one)(wk, tag, w) for wk, tag, w in eligible
+            )
+        else:
+            results = [_fit_one(wk, tag, w) for wk, tag, w in eligible]
+
+        self._char_vecs = {}
+        self._word_vecs = {}
+        confirmed_active: List[Tuple[str, str, int]] = []
+        for r in results:
+            if r is None:
                 continue
+            wk, tag, w, cv, wv = r
             self._char_vecs[tag] = cv
             self._word_vecs[tag] = wv
             confirmed_active.append((wk, tag, w))
@@ -1814,7 +1968,9 @@ def make_hybrid_vectorizer(
             sublinear_tf=sublinear_tf,
             stop_words=effective_stop_words,
         )
-        tfidf = FeatureUnion([("char", vec_char), ("word", vec_word)])
+        # n_jobs=-1 — char/word TF-IDF fit'ы независимы, threading backend
+        # joblib используется по умолчанию для FeatureUnion.
+        tfidf = FeatureUnion([("char", vec_char), ("word", vec_word)], n_jobs=-1)
 
     steps: list = [("phrase_remover", phrase_remover)]
     if use_lemma:
@@ -1841,9 +1997,9 @@ def make_hybrid_vectorizer(
             ("extract", MetaFeatureExtractor()),
             ("scale", StandardScaler()),
         ])
-        return FeatureUnion([
-            ("text", text_pipeline),
-            ("meta", meta_pipeline),
-        ])
+        return FeatureUnion(
+            [("text", text_pipeline), ("meta", meta_pipeline)],
+            n_jobs=-1,
+        )
 
     return text_pipeline

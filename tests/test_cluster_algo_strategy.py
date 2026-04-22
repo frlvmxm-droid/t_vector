@@ -95,7 +95,7 @@ class TestCudaAvailable:
 
     def test_mocked_true_via_attr(self):
         """Direct attribute injection simulates a GPU environment."""
-        setattr(cas.cuda_available, "_cached", True)
+        cas.cuda_available._cached = True
         assert cas.cuda_available() is True
 
 
@@ -123,7 +123,7 @@ class TestCumlKmeansAvailable:
         """Even if cuml were importable, cuda_available() == False → result False."""
         monkeypatch.setattr(cas, "_CUML_KMEANS", None)
         monkeypatch.setattr(cas, "_cuml_cluster", None)
-        setattr(cas.cuda_available, "_cached", False)
+        cas.cuda_available._cached = False
 
         fake_cuml_cluster = types.ModuleType("cuml.cluster")
 
@@ -158,7 +158,7 @@ class TestCumlUmapAvailable:
         assert first == second
 
     def test_returns_false_when_cuda_unavailable(self, monkeypatch):
-        setattr(cas.cuda_available, "_cached", False)
+        cas.cuda_available._cached = False
         result = cas.cuml_umap_available()
         assert result is False
 

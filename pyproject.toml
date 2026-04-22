@@ -3,17 +3,80 @@ name = "classification-tool"
 version = "9.0.0"
 description = "BankReasonTrainer — классификатор причин обращений"
 requires-python = ">=3.11,<3.14"
+# Mandatory runtime deps — web-UI (Voilà) + headless CLI + tests.
+# Optional ML extras (torch, transformers, sentence-transformers, setfit, umap,
+# rapidfuzz, datasketch, pymorphy3) live under [project.optional-dependencies]
+# so a minimal install (CLI / CI / Docker) does not pull a multi-GB wheel.
+# Source of truth for fully-pinned versions: uv.lock (see ADR-0008).
+dependencies = [
+    "pandas>=2.1",
+    "openpyxl>=3.1",
+    "scikit-learn>=1.4",
+    "joblib>=1.3",
+    "numpy>=1.24",
+    "psutil>=5.9",
+    "scipy>=1.11",
+    "huggingface_hub>=0.20",
+    "cryptography>=42.0",
+    "safetensors>=0.4",
+    "matplotlib>=3.7",
+]
+
+[project.optional-dependencies]
+# Dev / CI tooling — keep aligned with .github/workflows/quality-gates.yml
+# and .github/workflows/mutation-score.yml.
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=4.1",
+    "hypothesis>=6.100",
+    "mutmut>=2.4,<3",  # 3.x changed CLI (no --paths-to-mutate, no --json) — see ADR-0006
+    "ruff>=0.4",
+    "mypy>=1.8",
+    "bandit>=1.7",
+]
+# Optional ML extras — install only when needed.
+ml = [
+    "sentence-transformers>=2.7,<5.0",
+    "setfit>=0.9,<2.0",
+    "transformers>=4.40,<4.52",
+    "torch>=2.1,<3.0",
+    "rapidfuzz>=2.13",
+    "datasketch>=1.6",
+    "umap-learn>=0.5",
+    "pymorphy3>=1.2",
+]
+# Jupyter / Voilà web UI — install on the JupyterHub user image.
+# See docs/JUPYTERHUB_UI.md for deployment details.
+ui = [
+    "ipywidgets>=8.0",
+    "voila>=0.5",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# Repository is a flat-layout app, not an installable package — exposing only
+# the bank_reason_trainer/ headless CLI keeps build isolation predictable.
+packages = ["bank_reason_trainer"]
 
 [tool.ruff]
 line-length = 120
 target-version = "py311"
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "UP"]
+select = ["E", "F", "W", "I", "UP", "B"]
 ignore = [
     "E501",   # длинные строки в UI и tooltip-текстах — допустимы
     "E741",   # ambiguous variable names (l, O, I) — встречаются в ML-коде
     "UP007",  # Optional[X] vs X | None — оставляем совместимость с 3.9
+    # B-rules (bugbear): widespread-but-intentional patterns in this codebase
+    "B008",   # function call in default argument (common Python idiom for factories)
+    "B904",   # raise-without-from in except — too widespread, tracked separately
+    "B905",   # zip-without-strict — sklearn / numpy idioms don't benefit
+    "B007",   # unused loop variable (OK for readability with explicit names)
+    "B023",   # function uses loop variable (intentional in ML closures)
 ]
 
 [tool.mypy]
@@ -22,12 +85,79 @@ ignore_missing_imports = true
 strict = false
 warn_unused_ignores = true
 
+# Постепенное включение strict-mypy по модулям.
+# Начинаем с «ядра контрактов» + изолированных ML-утилит, не тянущих за собой
+# тяжёлые импорты. Расширяем постепенно (см. CLAUDE.md). Wave 5 target: ≥25.
+[[tool.mypy.overrides]]
+module = [
+    "workflow_contracts",
+    "artifact_contracts",
+    "ml_compat",
+    "ml_core",
+    "ml_sbert_bootstrap",
+    "ml_distillation",
+    "llm_reranker",
+    "cluster_workflow_service",
+    "app_train_service",
+    "bank_reason_trainer.cli",
+    "bank_reason_trainer.__init__",
+]
+strict = true
+follow_imports = "silent"
+
+# ---------------------------------------------------------------------------
+# Bandit — security scanner
+# ---------------------------------------------------------------------------
+# `bandit -c pyproject.toml -r . --exclude ./tests,./ci,./fixtures -ll`
+[tool.bandit]
+exclude_dirs = ["tests", "ci", "fixtures", "build", "dist", ".git"]
+skips = [
+    "B101",  # assert in tests is fine
+    "B110",  # try-except-pass — best-effort resource cleanup (annotated sites)
+    "B404",  # subprocess import — used in setup_env.py, download_sbert_models.py, ci/mutation_smoke.py, tests/test_voila_smoke.py legitimately
+    "B603",  # subprocess without shell=True — we already avoid shell=True
+    "B607",  # subprocess partial path — explicit python interpreter is intended
+    "B311",  # random for non-security contexts (sampling, jitter) — documented
+    "B301", "B403",  # pickle via joblib — loads gated by SHA-256 TrustStore
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+# Coverage is gated in CI only (quality-gates.yml) with --cov=. --cov-branch
+# --cov-fail-under=50. Local runs stay fast (coverage ≈5-10× overhead with
+# branch tracking). See docs/adr/0006-mutation-testing.md.
 addopts = "--tb=short -q"
+filterwarnings = [
+    # После Wave 5 миграции legacy-kwargs → TrainingOptions(...) не должно
+    # оставаться ни одного DeprecationWarning из ml_training в тестах.
+    "error::DeprecationWarning:ml_training",
+]
+# `slow` зарезервирован под долгие тесты (см. CONTRIBUTING.md);
+# unit/integration удалены — в коде ни одного применения.
+markers = [
+    "slow: long-running tests",
+]
 
 [tool.pip-compile]
 output-file = "requirements.lock"
+
+# ---------------------------------------------------------------------------
+# Mutmut — mutation testing (ADR-0006, Wave 8.1)
+# ---------------------------------------------------------------------------
+# Scoped to high-value pure-logic modules where line coverage is a weak signal:
+# numeric helpers (ml_distillation), data-shape contracts (workflow_contracts),
+# small infra (ml_core constants & shims). Run via `tools/mutation_smoke.py`
+# (per-module wrapper) or the nightly `mutation-score.yml` workflow. The
+# package-level `mutmut run` is kept narrow because the full ml_* suite
+# exceeds 6 hours on standard CI runners — see ADR-0006 §3.
+[tool.mutmut]
+paths_to_mutate = "ml_distillation.py,workflow_contracts.py,ml_core.py"
+tests_dir = "tests/"
+runner = "python -m pytest -x -q --tb=no"
+backup = false
+# Mutants that match these patterns are skipped — they are equivalent
+# (semantics-preserving) by construction.
+also_copy = "tests/conftest.py"

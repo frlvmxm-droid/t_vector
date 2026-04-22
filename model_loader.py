@@ -1,13 +1,13 @@
-# -*- coding: utf-8 -*-
 """Единая безопасная загрузка модельных .joblib-артефактов."""
 from __future__ import annotations
 
 import getpass
 import hashlib
 import threading
-from datetime import datetime, timezone
+from collections.abc import Callable, Iterable, Mapping
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping, Optional
+from typing import Any
 
 import joblib
 
@@ -62,6 +62,37 @@ def is_safe_path(base_dir: Path, target_path: Path) -> bool:
         target_path.relative_to(base_dir)
         return True
     except ValueError:
+        return False
+
+
+def is_safe_path_strict(base_dir: Path, target_path: Path) -> bool:
+    """Stricter variant: rejects any path containing a symlink component.
+
+    Mitigates TOCTOU attacks where a symlink can be swapped between the
+    resolve() call and the subsequent file open. Walks the target's
+    ancestor chain; if ANY component is a symlink, the path is refused.
+    The final resolved path must still lie within ``base_dir``.
+
+    Use this for high-trust operations (e.g. joblib trust-store loads);
+    `is_safe_path` remains for plain boundary checks.
+    """
+    try:
+        resolved_base = base_dir.resolve()
+        # Refuse if any component on the way to the target is a symlink.
+        current = target_path
+        # Walk the user-supplied path (not the resolved one) to detect
+        # a symlink swap that happens BEFORE resolution.
+        while True:
+            if current.is_symlink():
+                return False
+            parent = current.parent
+            if parent == current:
+                break
+            current = parent
+        resolved_target = target_path.resolve()
+        resolved_target.relative_to(resolved_base)
+        return True
+    except (OSError, ValueError):
         return False
 
 
@@ -183,8 +214,6 @@ def ensure_trusted_model_path(
         True  — путь уже доверенный или пользователь подтвердил.
         False — отказ пользователя, timeout или отозванный путь.
     """
-    canonical_path = _canonical_path_key(path)
-
     # Вычисляем текущий хеш для детектирования изменений файла
     current_hash = ""
     try:
@@ -230,17 +259,17 @@ def load_model_artifact(
     path: str,
     *,
     supported_schema_version: int = 1,
-    expected_artifact_types: Optional[Iterable[str]] = None,
-    required_keys: Optional[Iterable[str]] = None,
-    required_key_types: Optional[Mapping[str, type | tuple[type, ...]]] = None,
-    expected_sha256: Optional[str] = None,
-    precomputed_sha256: Optional[str] = None,
+    expected_artifact_types: Iterable[str] | None = None,
+    required_keys: Iterable[str] | None = None,
+    required_key_types: Mapping[str, type | tuple[type, ...]] | None = None,
+    expected_sha256: str | None = None,
+    precomputed_sha256: str | None = None,
     allow_missing_schema: bool = True,
     allowed_extensions: Iterable[str] = (".joblib", ".safetensors"),
-    allowed_base_dir: Optional[str] = None,
+    allowed_base_dir: str | None = None,
     require_trusted: bool = False,
-    trusted_paths: Optional[Iterable[str]] = None,
-    log_fn: Optional[Callable[[str], None]] = None,
+    trusted_paths: Iterable[str] | None = None,
+    log_fn: Callable[[str], None] | None = None,
     logger: Any = None,
 ) -> dict[str, Any]:
     """Загружает и валидирует model-bundle в единой точке."""
@@ -256,7 +285,7 @@ def load_model_artifact(
                 f"[UNTRUSTED_MODEL_PATH] Путь не подтверждён как доверенный: {path}"
             )
 
-    started_at = datetime.now(timezone.utc).isoformat()
+    started_at = datetime.now(UTC).isoformat()
     actor = getpass.getuser()
     sha256 = (precomputed_sha256 or "").strip().lower() or file_sha256(path)
     if logger:

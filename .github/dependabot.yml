@@ -1,0 +1,61 @@
+version: 2
+
+updates:
+  # GitHub Actions — keep CI runner versions fresh.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - ci
+    commit-message:
+      prefix: "ci(deps)"
+
+  # Python runtime dependencies — grouped so one PR covers a coherent bump.
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    open-pull-requests-limit: 10
+    labels:
+      - dependencies
+      - python
+    commit-message:
+      prefix: "deps"
+    groups:
+      ml-core:
+        patterns:
+          - "scikit-learn"
+          - "numpy"
+          - "scipy"
+          - "joblib"
+          - "pandas"
+      ml-extras:
+        patterns:
+          - "sentence-transformers"
+          - "transformers"
+          - "torch*"
+          - "setfit"
+          - "huggingface-hub"
+          - "tokenizers"
+      text-processing:
+        patterns:
+          - "pymorphy*"
+          - "regex"
+          - "openpyxl"
+      security:
+        patterns:
+          - "cryptography"
+          - "bandit"
+          - "pip-audit"
+      tooling:
+        patterns:
+          - "ruff"
+          - "mypy"
+          - "pytest*"

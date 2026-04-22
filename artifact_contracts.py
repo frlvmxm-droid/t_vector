@@ -1,11 +1,10 @@
-# -*- coding: utf-8 -*-
 """Typed contracts and schema validators for persisted model artifacts."""
 from __future__ import annotations
 
-from typing import Any, Mapping, TypedDict
+from collections.abc import Mapping
+from typing import Any, TypedDict
 
 from exceptions import SchemaError
-
 
 CLUSTER_MODEL_ARTIFACT_TYPE = "cluster_model_bundle"
 TRAIN_MODEL_ARTIFACT_TYPE = "train_model_bundle"

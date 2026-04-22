@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Unit tests for cluster_workflow_service.py.
 
 Tests verify the orchestration logic and data contracts without running
@@ -16,7 +15,6 @@ import pytest
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
 from cluster_workflow_service import ClusteringWorkflow, ClusterRunResult
-
 
 # ---------------------------------------------------------------------------
 # Helpers — mock pipeline stage results
@@ -145,3 +143,147 @@ def test_prepare_only_calls_prepare_inputs():
 
     mock_prep.assert_called_once_with(["/f.xlsx"], snap)
     assert result is prepared
+
+
+# ---------------------------------------------------------------------------
+# W3.5 / W3.3 — snap is frozen at service boundary (MappingProxyType)
+# ---------------------------------------------------------------------------
+
+def test_run_freezes_snap_before_handoff():
+    """Pipeline stages must receive a read-only mapping view of snap."""
+    from types import MappingProxyType as _MPT
+
+    prepared, vectors, cluster, post, export = _make_mock_stages()
+    snap = {"cluster_algo": "kmeans", "k_clusters": 3}
+
+    with patch("cluster_workflow_service.prepare_inputs", return_value=prepared) as p_prep, \
+         patch("cluster_workflow_service.build_vectors", return_value=vectors) as p_bv, \
+         patch("cluster_workflow_service.run_clustering", return_value=cluster), \
+         patch("cluster_workflow_service.postprocess_clusters", return_value=post), \
+         patch("cluster_workflow_service.export_cluster_outputs", return_value=export):
+
+        ClusteringWorkflow.run(files_snapshot=[], snap=snap)
+
+    handed_to_prepare = p_prep.call_args.args[1]
+    handed_to_bv = p_bv.call_args.args[1]
+    assert isinstance(handed_to_prepare, _MPT)
+    assert isinstance(handed_to_bv, _MPT)
+    # equality with the original dict still holds
+    assert handed_to_prepare == snap
+
+
+def test_run_accepts_already_frozen_snap_without_rewrap():
+    """Passing a MappingProxyType in should be forwarded as-is."""
+    from types import MappingProxyType as _MPT
+
+    prepared, vectors, cluster, post, export = _make_mock_stages()
+    frozen_in = _MPT({"cluster_algo": "kmeans"})
+
+    with patch("cluster_workflow_service.prepare_inputs", return_value=prepared) as p_prep, \
+         patch("cluster_workflow_service.build_vectors", return_value=vectors), \
+         patch("cluster_workflow_service.run_clustering", return_value=cluster), \
+         patch("cluster_workflow_service.postprocess_clusters", return_value=post), \
+         patch("cluster_workflow_service.export_cluster_outputs", return_value=export):
+
+        ClusteringWorkflow.run(files_snapshot=[], snap=frozen_in)
+
+    assert p_prep.call_args.args[1] is frozen_in
+
+
+# ---------------------------------------------------------------------------
+# Phase 14 — progress_cb fire-through + cancel_event plumbing
+# ---------------------------------------------------------------------------
+
+def test_progress_cb_invoked_at_each_stage_boundary():
+    """progress_cb should be called at 0.0 / 0.15 / 0.45 / 0.70 / 0.85 / 1.0."""
+    prepared, vectors, cluster, post, export = _make_mock_stages()
+    progress: list[tuple[float, str]] = []
+
+    with patch("cluster_workflow_service.prepare_inputs", return_value=prepared), \
+         patch("cluster_workflow_service.build_vectors", return_value=vectors), \
+         patch("cluster_workflow_service.run_clustering", return_value=cluster), \
+         patch("cluster_workflow_service.postprocess_clusters", return_value=post), \
+         patch("cluster_workflow_service.export_cluster_outputs", return_value=export):
+
+        ClusteringWorkflow.run(
+            files_snapshot=[],
+            snap={},
+            progress_cb=lambda f, m: progress.append((float(f), m)),
+        )
+
+    assert [round(p[0], 2) for p in progress] == [0.00, 0.15, 0.45, 0.70, 0.85, 1.00]
+    assert progress[0][1].startswith("Подготовка")
+    assert progress[-1][1] == "Готово"
+
+
+def test_cancel_event_set_before_run_raises_immediately():
+    """cancel_event set before entry → WorkflowCancelled, no stage runs."""
+    import threading
+
+    from cluster_workflow_service import WorkflowCancelled
+
+    event = threading.Event()
+    event.set()
+
+    with patch("cluster_workflow_service.prepare_inputs") as p_prep, \
+         patch("cluster_workflow_service.build_vectors") as p_bv, \
+         patch("cluster_workflow_service.run_clustering") as p_rc, \
+         patch("cluster_workflow_service.postprocess_clusters") as p_post, \
+         patch("cluster_workflow_service.export_cluster_outputs") as p_exp:
+
+        with pytest.raises(WorkflowCancelled):
+            ClusteringWorkflow.run(
+                files_snapshot=[], snap={}, cancel_event=event,
+            )
+
+        p_prep.assert_not_called()
+        p_bv.assert_not_called()
+        p_rc.assert_not_called()
+        p_post.assert_not_called()
+        p_exp.assert_not_called()
+
+
+def test_cancel_event_set_mid_pipeline_stops_before_next_stage():
+    """Cancel fired inside build_vectors → run_clustering must not execute."""
+    import threading
+
+    from cluster_workflow_service import WorkflowCancelled
+
+    prepared, vectors, cluster, post, export = _make_mock_stages()
+    event = threading.Event()
+
+    def _vectors_that_cancels(_prep, _snap):
+        event.set()
+        return vectors
+
+    with patch("cluster_workflow_service.prepare_inputs", return_value=prepared), \
+         patch("cluster_workflow_service.build_vectors", side_effect=_vectors_that_cancels), \
+         patch("cluster_workflow_service.run_clustering") as p_rc, \
+         patch("cluster_workflow_service.postprocess_clusters") as p_post, \
+         patch("cluster_workflow_service.export_cluster_outputs") as p_exp:
+
+        with pytest.raises(WorkflowCancelled):
+            ClusteringWorkflow.run(
+                files_snapshot=[], snap={}, cancel_event=event,
+            )
+
+        p_rc.assert_not_called()
+        p_post.assert_not_called()
+        p_exp.assert_not_called()
+
+
+def test_cancel_event_none_runs_to_completion():
+    """cancel_event=None is benign — full pipeline executes."""
+    prepared, vectors, cluster, post, export = _make_mock_stages()
+
+    with patch("cluster_workflow_service.prepare_inputs", return_value=prepared), \
+         patch("cluster_workflow_service.build_vectors", return_value=vectors), \
+         patch("cluster_workflow_service.run_clustering", return_value=cluster), \
+         patch("cluster_workflow_service.postprocess_clusters", return_value=post), \
+         patch("cluster_workflow_service.export_cluster_outputs", return_value=export):
+
+        result = ClusteringWorkflow.run(
+            files_snapshot=[], snap={}, cancel_event=None,
+        )
+
+    assert isinstance(result, ClusterRunResult)

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 ml_distillation — дистилляция знаний (teacher → student).
 
@@ -41,12 +40,14 @@ ml_distillation — дистилляция знаний (teacher → student).
 """
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from collections.abc import Callable, Sequence
+from typing import Any
 
 import numpy as np
 from sklearn.pipeline import Pipeline
 
 from app_logger import get_logger
+from config.ml_constants import DISTILL_EPS
 
 _log = get_logger(__name__)
 
@@ -61,7 +62,7 @@ def distill_soft_labels(
     alpha: float = 0.5,
     test_size: float = 0.15,
     random_state: int = 42,
-    log_cb: Optional[Callable[[str], None]] = None,
+    log_cb: Callable[[str], None] | None = None,
 ) -> Pipeline:
     """Обучает студента на мягких метках учителя (soft label distillation).
 
@@ -102,17 +103,18 @@ def distill_soft_labels(
     _log_msg(f"[Дистилляция] Учитель → предсказываю вероятности ({len(X)} примеров)…")
 
     teacher_classes = list(teacher.classes_) if hasattr(teacher, "classes_") else classes
-    t_cls_to_idx = {c: i for i, c in enumerate(teacher_classes)}
 
     teacher_proba_raw = teacher.predict_proba(X)
 
-    # Температурное сглаживание (работает на логитах, аппроксимируем через log)
+    # Температурное сглаживание (работает на логитах, аппроксимируем через log).
+    # Численно устойчиво даже при T → ∞: используем logsumexp-нормализацию
+    # вместо clip-фоллбэка, иначе underflow в exp + деление на DISTILL_EPS
+    # дают ошибку ×1e10.
     if temperature != 1.0:
-        eps = 1e-10
-        log_p = np.log(np.clip(teacher_proba_raw, eps, 1.0)) / float(temperature)
+        log_p = np.log(np.clip(teacher_proba_raw, DISTILL_EPS, 1.0)) / float(temperature)
         log_p -= log_p.max(axis=1, keepdims=True)
-        teacher_proba_raw = np.exp(log_p)
-        teacher_proba_raw /= teacher_proba_raw.sum(axis=1, keepdims=True).clip(eps)
+        log_z = np.log(np.exp(log_p).sum(axis=1, keepdims=True))
+        teacher_proba_raw = np.exp(log_p - log_z)
 
     # Выровнять классы учителя → порядку classes студента
     teacher_proba = np.zeros((len(X), n_classes))
@@ -121,38 +123,32 @@ def distill_soft_labels(
         if j_s is not None:
             teacher_proba[:, j_s] = teacher_proba_raw[:, j_t]
 
-    # One-hot hard labels
-    hard_labels = np.zeros((len(X), n_classes))
-    for i, lbl in enumerate(y):
-        j = cls_to_idx.get(lbl)
-        if j is not None:
-            hard_labels[i, j] = 1.0
+    # Vectorized one-hot: eye-based indexing replaces the per-row Python loop.
+    y_idx = np.fromiter((cls_to_idx[lbl] for lbl in y), dtype=np.int64, count=len(y))
+    hard_labels = np.eye(n_classes, dtype=teacher_proba.dtype)[y_idx]
 
-    # Мягкие метки = смесь teacher + hard
     soft_proba = alpha * teacher_proba + (1.0 - alpha) * hard_labels
 
-    # Для sklearn: обучаем на argmax + sample_weight (= уверенность в истинном классе)
-    # Это аппроксимация дистилляции для hard-label классификаторов.
-    soft_y = [classes[int(soft_proba[i].argmax())] for i in range(len(X))]
-    true_cls_proba = np.array([
-        float(soft_proba[i, cls_to_idx.get(y_i, 0)])
-        for i, y_i in enumerate(y)
-    ])
-    # sample_weight: примеры, где мягкая метка совпадает с истинной, весят больше
-    sample_weights = np.where(
-        np.array(soft_y) == np.array(y),
-        1.0 + true_cls_proba,
-        1.0 - true_cls_proba + 0.1,
-    )
+    # Vectorized argmax + per-row lookup of probability at the true class.
+    soft_y_idx = soft_proba.argmax(axis=1)
+    classes_arr = np.asarray(classes)
+    soft_y_arr = classes_arr[soft_y_idx]
+    true_cls_proba = soft_proba[np.arange(len(X)), y_idx]
+
+    y_arr = np.asarray(y)
+    matches = soft_y_arr == y_arr
+    sample_weights = np.where(matches, 1.0 + true_cls_proba, 1.1 - true_cls_proba)
+    soft_y = soft_y_arr.tolist()
 
     _log_msg(
         f"[Дистилляция] T={temperature} alpha={alpha} | "
         f"мягких меток ≠ истинных: "
-        f"{int((np.array(soft_y) != np.array(y)).sum())} из {len(y)}"
+        f"{int((~matches).sum())} из {len(y)}"
     )
     _log_msg("[Дистилляция] Обучение студента…")
 
-    student_pipe.fit(X, soft_y, clf__sample_weight=sample_weights)
+    clf_step_name = student_pipe.steps[-1][0]
+    student_pipe.fit(X, soft_y, **{f"{clf_step_name}__sample_weight": sample_weights})
     _log_msg("[Дистилляция] ✅ Студент обучен.")
     return student_pipe
 
@@ -162,14 +158,14 @@ def evaluate_distillation(
     student: Any,
     X_test: Sequence[str],
     y_test: Sequence[str],
-    log_cb: Optional[Callable[[str], None]] = None,
-) -> Dict[str, Any]:
+    log_cb: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
     """Сравнивает метрики учителя и студента на тестовой выборке.
 
     Возвращает словарь:
       teacher_f1, student_f1, f1_drop, teacher_acc, student_acc, acc_drop
     """
-    from sklearn.metrics import f1_score, accuracy_score
+    from sklearn.metrics import accuracy_score, f1_score
 
     def _log_msg(msg: str) -> None:
         _log.info(msg)

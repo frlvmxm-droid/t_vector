@@ -1,0 +1,37 @@
+[run]
+branch = True
+source = .
+omit =
+    tests/*
+    */__pycache__/*
+    build/*
+    dist/*
+    setup.py
+    setup_env.py
+    download_sbert_models.py
+    ctk_migration_pack/*
+    # Optional heavy-stack modules that require torch + transformers
+    # (and a downloaded HF checkpoint) to exercise meaningfully. Covered
+    # by nightly integration runs, not unit tests.
+    t5_summarizer.py
+    ml_mlm_pretrain.py
+    # Deprecated re-export shims (warn on import, code lives elsewhere)
+    utils/__init__.py
+    utils/excel_utils.py
+    utils/t5_summarizer.py
+    # Legacy entrypoint kept for back-compat
+    bank_reason_trainer/__main__.py
+
+[report]
+exclude_also =
+    # Defensive import-guards are exercised only when deps missing
+    except ImportError.*:
+    pragma: no cover
+    if TYPE_CHECKING:
+    if __name__ == .__main__.:
+    raise NotImplementedError
+    \.\.\.$
+fail_under = 72
+precision = 2
+show_missing = True
+skip_covered = True

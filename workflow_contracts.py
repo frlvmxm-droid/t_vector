@@ -1,25 +1,34 @@
-# -*- coding: utf-8 -*-
 """Контракты конфигурации workflow-слоя (валидация снапшотов UI)."""
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Dict
 import math
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, cast
 
-try:
-    from pydantic import BaseModel, ValidationError
-except (ImportError, ModuleNotFoundError):  # optional dependency
-    BaseModel = None  # type: ignore[assignment]
-    ValidationError = Exception
+if TYPE_CHECKING:
+    from pydantic import BaseModel as _PydanticBaseModel
+    from pydantic import Field as _Field
+
+    ValidationError: type[Exception] = Exception
+    _BaseModel: type[_PydanticBaseModel] | None = None
+else:
+    try:
+        from pydantic import BaseModel as _BaseModel
+        from pydantic import Field as _Field
+        from pydantic import ValidationError
+    except (ImportError, ModuleNotFoundError):  # optional dependency
+        _BaseModel = None
+        _Field = None  # type: ignore[assignment]
+        ValidationError = Exception
 
 
-def _require(data: Dict[str, Any], key: str) -> Any:
+def _require(data: dict[str, Any], key: str) -> Any:
     if key not in data:
         raise ValueError(f"Отсутствует обязательный параметр: {key}")
     return data[key]
 
 
-def _as_str(data: Dict[str, Any], key: str, *, min_len: int = 1) -> str:
+def _as_str(data: dict[str, Any], key: str, *, min_len: int = 1) -> str:
     val = _require(data, key)
     if not isinstance(val, str):
         raise ValueError(f"Параметр {key} должен быть строкой.")
@@ -29,7 +38,7 @@ def _as_str(data: Dict[str, Any], key: str, *, min_len: int = 1) -> str:
     return out
 
 
-def _as_float(data: Dict[str, Any], key: str, *, min_value: float | None = None, max_value: float | None = None) -> float:
+def _as_float(data: dict[str, Any], key: str, *, min_value: float | None = None, max_value: float | None = None) -> float:
     val = _require(data, key)
     try:
         out = float(val)
@@ -44,7 +53,7 @@ def _as_float(data: Dict[str, Any], key: str, *, min_value: float | None = None,
     return out
 
 
-def _as_int(data: Dict[str, Any], key: str, *, min_value: int | None = None, max_value: int | None = None) -> int:
+def _as_int(data: dict[str, Any], key: str, *, min_value: int | None = None, max_value: int | None = None) -> int:
     val = _require(data, key)
     try:
         out = int(val)
@@ -57,21 +66,45 @@ def _as_int(data: Dict[str, Any], key: str, *, min_value: int | None = None, max
     return out
 
 
-def _manual_validate_payload(schema_name: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+def _manual_validate_payload(schema_name: str, payload: dict[str, Any]) -> dict[str, Any]:
     """Строгая ручная валидация при отсутствии pydantic."""
     out = dict(payload)
     if schema_name == "train":
         out["train_mode"] = _as_str(out, "train_mode")
-        out["C"] = _as_float(out, "C", min_value=0.0)
+        # `gt=0`, не `>= 0` — соответствует pydantic _TrainSchema.
+        c_val = _as_float(out, "C", min_value=0.0, max_value=None)
+        if c_val <= 0.0:
+            raise ValueError("Параметр C должен быть > 0.")
+        out["C"] = c_val
         out["max_iter"] = _as_int(out, "max_iter", min_value=1)
         out["test_size"] = _as_float(out, "test_size", min_value=0.0, max_value=0.95)
+        if out["test_size"] <= 0.0:
+            raise ValueError("Параметр test_size должен быть > 0.")
         out.setdefault("use_smote", True)
         out.setdefault("oversample_strategy", "augment_light")
         out.setdefault("diagnostic_mode", False)
+        # Опциональная валидация TrainingOptions-зеркальных полей.
+        # Толерантна к отсутствию ключей — старые snap-файлы не падают.
+        if "field_dropout_prob" in out:
+            out["field_dropout_prob"] = _as_float(
+                out, "field_dropout_prob", min_value=0.0, max_value=1.0,
+            )
+        if "label_smoothing_eps" in out:
+            out["label_smoothing_eps"] = _as_float(
+                out, "label_smoothing_eps", min_value=0.0, max_value=0.5,
+            )
+        if "fuzzy_dedup_threshold" in out:
+            out["fuzzy_dedup_threshold"] = _as_int(
+                out, "fuzzy_dedup_threshold", min_value=0, max_value=100,
+            )
+        if "field_dropout_copies" in out:
+            out["field_dropout_copies"] = _as_int(
+                out, "field_dropout_copies", min_value=1, max_value=10,
+            )
     elif schema_name == "apply":
-        out["model_file"] = _as_str(out, "model_file")
-        out["apply_file"] = _as_str(out, "apply_file")
-        out["pred_col"] = _as_str(out, "pred_col")
+        out["model_file"] = _as_str(out, "model_file", min_len=1)
+        out["apply_file"] = _as_str(out, "apply_file", min_len=1)
+        out["pred_col"] = _as_str(out, "pred_col", min_len=1)
         out.setdefault("use_ensemble", False)
         out.setdefault("diagnostic_mode", False)
     elif schema_name == "cluster":
@@ -87,53 +120,82 @@ def _manual_validate_payload(schema_name: str, payload: Dict[str, Any]) -> Dict[
         out.setdefault("merge_similar_clusters", False)
         out.setdefault("merge_threshold", 0.85)
         out.setdefault("n_repr_examples", 5)
+        out.setdefault("hdbscan_reclust", False)
+        out.setdefault("compute_quality_metrics", False)
+        out.setdefault("umap_n_components", 10)
+        out.setdefault("umap_n_neighbors", 15)
+        out.setdefault("umap_min_dist", 0.1)
+        out.setdefault("umap_metric", "cosine")
     else:
         raise ValueError(f"Неизвестная схема валидации: {schema_name}")
     return out
 
 
-def _validate_payload(schema, payload: Dict[str, Any], *, schema_name: str) -> Dict[str, Any]:
+def _validate_payload(
+    schema: Any,
+    payload: dict[str, Any],
+    *,
+    schema_name: str,
+) -> dict[str, Any]:
     """Централизованная валидация payload: Pydantic (если доступен) или ручная."""
-    if BaseModel is not None and schema is not None:
+    if _BaseModel is not None and schema is not None:
         try:
             obj = schema(**payload)
-            return obj.model_dump()
+            return cast(dict[str, Any], obj.model_dump())
         except ValidationError as ex:
             raise ValueError(str(ex)) from ex
     return _manual_validate_payload(schema_name, payload)
 
 
-if BaseModel is not None:
-    class _TrainSchema(BaseModel):
-        train_mode: str
-        C: float
-        max_iter: int
-        test_size: float
+_TrainSchema: Any
+_ApplySchema: Any
+_ClusterSchema: Any
+
+if _BaseModel is not None:
+    class _TrainSchema(_BaseModel):  # type: ignore[no-redef,misc,valid-type]
+        # `allow_inf_nan=False` отвергает inf/-inf/NaN на уровне pydantic
+        # (без ручной post-проверки). Границы зеркалят _manual_validate_payload.
+        train_mode: str = _Field(..., min_length=1)
+        C: float = _Field(..., gt=0.0, allow_inf_nan=False)
+        max_iter: int = _Field(..., ge=1)
+        test_size: float = _Field(..., gt=0.0, le=0.95, allow_inf_nan=False)
         # Опциональные поля с defaults, совпадающими с from_snapshot()
         use_smote: bool = True
         oversample_strategy: str = "augment_light"
         diagnostic_mode: bool = False
+        # TrainingOptions-зеркальные поля для опционального снапшотного контроля.
+        # Все Optional — старые snap-файлы без них не упадут.
+        field_dropout_prob: float | None = _Field(None, ge=0.0, le=1.0)
+        label_smoothing_eps: float | None = _Field(None, ge=0.0, le=0.5)
+        fuzzy_dedup_threshold: int | None = _Field(None, ge=0, le=100)
+        field_dropout_copies: int | None = _Field(None, ge=1, le=10)
 
-    class _ApplySchema(BaseModel):
-        model_file: str
-        apply_file: str
-        pred_col: str
+    class _ApplySchema(_BaseModel):  # type: ignore[no-redef,misc,valid-type]
+        model_file: str = _Field(..., min_length=1)
+        apply_file: str = _Field(..., min_length=1)
+        pred_col: str = _Field(..., min_length=1)
         use_ensemble: bool = False
         diagnostic_mode: bool = False
 
-    class _ClusterSchema(BaseModel):
-        cluster_algo: str
-        cluster_vec_mode: str
-        k_clusters: int
-        n_init_cluster: int
-        cluster_min_df: int
+    class _ClusterSchema(_BaseModel):  # type: ignore[no-redef,misc,valid-type]
+        cluster_algo: str = _Field(..., min_length=1)
+        cluster_vec_mode: str = _Field(..., min_length=1)
+        k_clusters: int = _Field(..., ge=2, le=500)
+        n_init_cluster: int = _Field(..., ge=1, le=1000)
+        cluster_min_df: int = _Field(..., ge=0, le=1000)
         use_umap: bool
         use_llm_naming: bool = False
         use_t5_summary: bool = False
         diagnostic_mode: bool = False
         merge_similar_clusters: bool = False
-        merge_threshold: float = 0.85
-        n_repr_examples: int = 5
+        merge_threshold: float = _Field(0.85, ge=0.0, le=1.0, allow_inf_nan=False)
+        n_repr_examples: int = _Field(5, ge=1, le=100)
+        hdbscan_reclust: bool = False
+        compute_quality_metrics: bool = False
+        umap_n_components: int = _Field(10, ge=2, le=512)
+        umap_n_neighbors: int = _Field(15, ge=2, le=500)
+        umap_min_dist: float = _Field(0.1, ge=0.0, le=1.0, allow_inf_nan=False)
+        umap_metric: str = _Field("cosine", min_length=1)
 else:
     _TrainSchema = _ApplySchema = _ClusterSchema = None
 
@@ -149,7 +211,7 @@ class TrainWorkflowConfig:
     diagnostic_mode: bool
 
     @classmethod
-    def from_snapshot(cls, snap: Dict[str, Any]) -> "TrainWorkflowConfig":
+    def from_snapshot(cls, snap: dict[str, Any]) -> TrainWorkflowConfig:
         validated = _validate_payload(_TrainSchema, snap, schema_name="train")
         return cls(
             train_mode=str(_require(validated, "train_mode")),
@@ -171,7 +233,7 @@ class ApplyWorkflowConfig:
     diagnostic_mode: bool
 
     @classmethod
-    def from_snapshot(cls, snap: Dict[str, Any]) -> "ApplyWorkflowConfig":
+    def from_snapshot(cls, snap: dict[str, Any]) -> ApplyWorkflowConfig:
         validated = _validate_payload(_ApplySchema, snap, schema_name="apply")
         return cls(
             model_file=str(_require(validated, "model_file")),
@@ -195,7 +257,7 @@ class ClusterWorkflowConfig:
     diagnostic_mode: bool
 
     @classmethod
-    def from_snapshot(cls, snap: Dict[str, Any]) -> "ClusterWorkflowConfig":
+    def from_snapshot(cls, snap: dict[str, Any]) -> ClusterWorkflowConfig:
         validated = _validate_payload(_ClusterSchema, snap, schema_name="cluster")
         cluster_algo = str(_require(validated, "cluster_algo"))
         cluster_vec_mode = str(_require(validated, "cluster_vec_mode"))

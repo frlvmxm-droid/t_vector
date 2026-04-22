@@ -1,0 +1,115 @@
+# jupyterhub_config.py.example
+# ---------------------------------------------------------------------
+# Minimal single-admin JupyterHub config for the BankReasonTrainer
+# Voilà dashboard.  Paired with Dockerfile.jupyterhub and
+# docker-compose.yml.example.
+#
+# Usage:
+#   cp jupyterhub_config.py.example jupyterhub_config.py
+#   # edit passwords / users below
+#   docker compose up --build
+#
+# NOT production-ready:
+#   * DummyAuthenticator accepts any username + one shared password.
+#     Replace with LDAP / OAuth / PAM / NativeAuthenticator for real
+#     deployments.  See:
+#     https://jupyterhub.readthedocs.io/en/stable/reference/authenticators.html
+#   * LocalProcessSpawner runs spawners in the hub container.  Real
+#     multi-user isolation requires DockerSpawner or KubeSpawner.
+#   * CONFIGPROXY_AUTH_TOKEN must be rotated before going online.
+# ---------------------------------------------------------------------
+import os
+
+
+c = get_config()  # noqa: F821  (provided by JupyterHub at load time)
+
+
+# ── Authentication ────────────────────────────────────────────────────
+# DummyAuthenticator: any username, one shared password.  Demo-only.
+c.JupyterHub.authenticator_class = (
+    "dummyauthenticator.DummyAuthenticator"
+)
+c.DummyAuthenticator.password = os.environ.get(
+    "HUB_DUMMY_PASSWORD", "change-me"
+)
+
+# `admin` sees the admin dashboard at /hub/admin; `demo` is a regular
+# user.  Extend allowed_users once you wire up a real authenticator.
+c.Authenticator.admin_users = {"admin"}
+c.Authenticator.allowed_users = {"admin", "demo"}
+
+
+# ── Spawner — land every user on the Voilà dashboard ─────────────────
+c.JupyterHub.spawner_class = "jupyterhub.spawner.LocalProcessSpawner"
+
+# `jupyter-labhub` is Lab + HubExtensions; default_url sends the user
+# straight to the rendered notebook (Voilà).  Classic tree is still
+# reachable via the Lab side-bar.
+c.Spawner.cmd = ["jupyter-labhub"]
+c.Spawner.args = [
+    "--ServerApp.default_url=/voila/render/notebooks/ui.ipynb",
+]
+
+# Every user lands in the repo root so `ui_widgets` / services / ML
+# modules resolve without extra sys.path gymnastics.
+c.Spawner.notebook_dir = "/app"
+
+c.Spawner.environment = {
+    "PYTHONPATH": "/app",
+    # Shared HF cache prevents each user from re-downloading multi-GB
+    # SBERT / transformers weights.  Permissions on the volume should be
+    # 0775 with the hub's group so users can read (but not poison) it.
+    "HF_HOME": "/shared/hf-cache",
+    # Deterministic stub LLM — flip to a real provider + API key in prod.
+    "BRT_LLM_PROVIDER": os.environ.get("BRT_LLM_PROVIDER", "offline"),
+}
+
+# Per-user resource hints — uncomment and size to your host.
+# c.Spawner.mem_limit = "4G"
+# c.Spawner.cpu_limit = 2
+
+
+# ── Hub networking ────────────────────────────────────────────────────
+# 0.0.0.0 binding is required inside Docker so the published port on
+# the compose network reaches the hub.
+c.JupyterHub.bind_url = "http://0.0.0.0:8000"
+c.JupyterHub.hub_ip = "0.0.0.0"
+# `hub_connect_ip` is what spawners use to reach the hub API; in
+# docker-compose this is the service name.
+c.JupyterHub.hub_connect_ip = os.environ.get("HUB_CONNECT_IP", "jupyterhub")
+
+c.ConfigurableHTTPProxy.auth_token = os.environ.get(
+    "CONFIGPROXY_AUTH_TOKEN",
+    # Explicit fallback so mis-configured deployments refuse to start
+    # instead of silently running with an empty token.
+    "",
+)
+if not c.ConfigurableHTTPProxy.auth_token:
+    raise RuntimeError(
+        "CONFIGPROXY_AUTH_TOKEN is empty — set it via the environment "
+        "(32+ random hex chars). See docker-compose.yml.example."
+    )
+
+
+# ── Persistence ───────────────────────────────────────────────────────
+# Cookie secret: auto-generated into the hub-state volume by the
+# Dockerfile entrypoint (see Dockerfile.jupyterhub CMD).
+c.JupyterHub.cookie_secret_file = "/srv/jupyterhub/state/cookie_secret"
+
+# DB: PostgreSQL via DATABASE_URL (docker-compose wires it up); falls
+# back to a sqlite file in the state volume if the env var is missing.
+c.JupyterHub.db_url = os.environ.get(
+    "DATABASE_URL",
+    "sqlite:////srv/jupyterhub/state/jupyterhub.sqlite",
+)
+
+
+# ── Security notes ────────────────────────────────────────────────────
+# * `~/.classification_tool/trusted_models.json` (SHA-256 trust store
+#   for .joblib loads) lives in each user's home — must be on a
+#   persistent per-user volume, otherwise every session the user has to
+#   re-confirm every model.
+# * LLM_SNAPSHOT_KEY (Fernet) encrypts API keys in session snaps.
+#   Inject via the spawner environment (not here in plaintext).
+# * Reverse-proxy TLS termination is mandatory before exposing the hub
+#   to the public internet; this config listens plain HTTP on :8000.

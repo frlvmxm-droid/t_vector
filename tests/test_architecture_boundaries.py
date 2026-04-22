@@ -220,13 +220,15 @@ def test_sbert_compat_patches_are_bootstrap_scoped():
 def test_cluster_run_has_preflight_context_and_processing_reset():
     assert _class_has_method("app_cluster.py", "ClusterTabMixin", "_prepare_cluster_run_context")
     assert _has_attr_assignment("cluster_run_coordinator.py", "app", "_processing")
-    assert _has_attr_call_with_string_arg("app_cluster.py", "_log", "debug", "cluster cleanup gc.collect failed")
-    assert _has_attr_call_with_string_arg("app_cluster.py", "_log", "debug", "cluster cleanup torch.cuda.empty_cache failed")
+    # Defensive cleanup logging lives in cluster_runtime_service.cleanup_cluster_runtime,
+    # which is invoked from run_cluster via a log_fn callback.
+    assert _has_string_containing("cluster_runtime_service.py", "cluster cleanup gc.collect failed")
+    assert _has_string_containing("cluster_runtime_service.py", "cluster cleanup torch.cuda.empty_cache failed")
 
 
 def test_scrollable_frame_uses_local_wheel_bindings():
-    assert not _has_bind_all_call("ui_widgets.py")
-    assert _has_string_containing("ui_widgets.py", "<MouseWheel>")
+    assert not _has_bind_all_call("ui_widgets_tk.py")
+    assert _has_string_containing("ui_widgets_tk.py", "<MouseWheel>")
 
 
 def test_cluster_t5_builder_uses_precomputed_header_index():

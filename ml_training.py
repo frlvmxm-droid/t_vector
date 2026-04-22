@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import math
 import threading
+import warnings
 from collections import Counter
+from dataclasses import dataclass, fields as _dc_fields
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -31,10 +33,68 @@ from config.ml_constants import (
     SMOTE_MAX_MULTIPLIER, SMOTE_IMBALANCE_RATIO,
     CONF_THRESH_90_PERCENTILE, CONF_THRESH_75_PERCENTILE, CONF_THRESH_50_PERCENTILE,
     PR_MIN_PRECISION,
+    NN_MIX_BETA_ALPHA as _NN_MIX_BETA_ALPHA,
+    NN_MIX_SELF_DIST_EPS as _NN_MIX_SELF_DIST_EPS,
+    FUZZY_DEDUP_THRESHOLD_DEFAULT,
+    FIELD_DROPOUT_PROB_DEFAULT,
+    FIELD_DROPOUT_COPIES_DEFAULT,
+    LABEL_SMOOTHING_EPS_DEFAULT,
+    TEMP_SCALE_EPS,
 )
 from app_logger import get_logger
 
 _log = get_logger(__name__)
+
+# TF-IDF для построения индекса NN (nn_mix): малая модель, char_wb 2..4.
+_NN_MIX_NGRAM_RANGE = (2, 4)
+_NN_MIX_MAX_FEATURES = 15_000
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True, frozen=True)
+class TrainingOptions:
+    """Конфигурация аугментации/калибровки/CV для :func:`train_model`.
+
+    Заменяет плоский список из 13 kwargs-флагов. Дефолты берутся из
+    :mod:`config.ml_constants`, что позволяет monkeypatch-ить их в тестах
+    без правки конкретных call-sites.
+
+    Поля:
+        calib_method          — метод калибровки вероятностей:
+                                "sigmoid" (Platt) или "isotonic".
+        use_smote             — текстовый оверсэмплинг редких классов.
+        oversample_strategy   — "cap" | "augment_light" | "augment_medium".
+        max_dup_per_sample    — жёсткий потолок дубликатов на пример.
+        run_cv                — 5-fold кросс-валидация до обучения.
+        use_hard_negatives    — оверсэмплинг граничных пар между близкими классами.
+        use_field_dropout     — генерация копий с удалёнными [TAG]-секциями.
+        field_dropout_prob    — вероятность удаления каждой секции.
+        field_dropout_copies  — количество генерируемых копий на пример.
+        use_label_smoothing   — сглаживание one-hot меток.
+        label_smoothing_eps   — интенсивность сглаживания.
+        use_fuzzy_dedup       — дедупликация по rapidfuzz.
+        fuzzy_dedup_threshold — порог схожести (0..100), выше = строже.
+    """
+
+    calib_method: str = "sigmoid"
+    use_smote: bool = True
+    oversample_strategy: str = "cap"
+    max_dup_per_sample: int = 5
+    run_cv: bool = False
+    use_hard_negatives: bool = False
+    use_field_dropout: bool = False
+    field_dropout_prob: float = FIELD_DROPOUT_PROB_DEFAULT
+    field_dropout_copies: int = FIELD_DROPOUT_COPIES_DEFAULT
+    use_label_smoothing: bool = False
+    label_smoothing_eps: float = LABEL_SMOOTHING_EPS_DEFAULT
+    use_fuzzy_dedup: bool = False
+    fuzzy_dedup_threshold: int = FUZZY_DEDUP_THRESHOLD_DEFAULT
+
+
+_TRAINING_OPTIONS_FIELDS: frozenset[str] = frozenset(
+    f.name for f in _dc_fields(TrainingOptions)
+)
+
 
 def make_classifier(
     y: List[str],
@@ -118,6 +178,68 @@ def _maybe_skip_validation(
     return pipe, clf_type, f"ВАЛИДАЦИЯ ПРОПУЩЕНА ({reason}).", None, None, {}
 
 
+def fuzzy_string_dedup(
+    X: List[str],
+    y: List[str],
+    *,
+    threshold: int = FUZZY_DEDUP_THRESHOLD_DEFAULT,
+    log_cb: Optional[Callable[[str], None]] = None,
+) -> Tuple[List[str], List[str], int]:
+    """Near-duplicate dedup в паре (X, y) по rapidfuzz.token_sort_ratio.
+
+    Группирует строки одного класса с similarity ≥ threshold, оставляя
+    по одному представителю на группу. Дубликаты разных классов не
+    трогаем — они диагностически полезны как сигнал неоднозначности
+    разметки. При отсутствии rapidfuzz — graceful fallback на exact
+    dedup (strip+casefold).
+
+    Returns: (X_dedup, y_dedup, n_removed).
+    """
+    if not X:
+        return list(X), list(y), 0
+    n0 = len(X)
+    try:
+        from rapidfuzz import fuzz  # type: ignore[import-not-found]
+    except ImportError:
+        seen: Dict[Tuple[str, str], bool] = {}
+        out_x: List[str] = []
+        out_y: List[str] = []
+        for x, yi in zip(X, y):
+            key = (str(x).strip().casefold(), str(yi))
+            if key in seen:
+                continue
+            seen[key] = True
+            out_x.append(x)
+            out_y.append(yi)
+        removed = n0 - len(out_x)
+        if removed and log_cb:
+            log_cb(f"[Dedup] Удалено точных дубликатов: {removed} (rapidfuzz недоступен)")
+        return out_x, out_y, removed
+
+    by_class: Dict[str, List[int]] = {}
+    for i, yi in enumerate(y):
+        by_class.setdefault(str(yi), []).append(i)
+
+    keep_mask = [True] * n0
+    for _cls, idxs in by_class.items():
+        normalized = [str(X[i]).strip().casefold() for i in idxs]
+        for a in range(len(idxs)):
+            if not keep_mask[idxs[a]]:
+                continue
+            for b in range(a + 1, len(idxs)):
+                if not keep_mask[idxs[b]]:
+                    continue
+                score = fuzz.token_sort_ratio(normalized[a], normalized[b])
+                if score >= threshold:
+                    keep_mask[idxs[b]] = False
+    out_x = [X[i] for i, keep in enumerate(keep_mask) if keep]
+    out_y = [y[i] for i, keep in enumerate(keep_mask) if keep]
+    removed = n0 - len(out_x)
+    if removed and log_cb:
+        log_cb(f"[Dedup] Near-duplicate'ов (rapidfuzz ≥{threshold}): {removed}")
+    return out_x, out_y, removed
+
+
 def _oversample_rare_classes(
     Xtr: List[str],
     ytr: List[str],
@@ -163,8 +285,8 @@ def _oversample_rare_classes(
         try:
             from sklearn.feature_extraction.text import TfidfVectorizer as _TfIdf
             from sklearn.neighbors import NearestNeighbors
-            _vec = _TfIdf(analyzer="char_wb", ngram_range=(2, 4),
-                          max_features=15_000, min_df=1)
+            _vec = _TfIdf(analyzer="char_wb", ngram_range=_NN_MIX_NGRAM_RANGE,
+                          max_features=_NN_MIX_MAX_FEATURES, min_df=1)
             _M = _vec.fit_transform([str(t) for t in Xtr])
             _nn_cache["vec"] = _vec
             _nn_cache["M"] = _M
@@ -180,7 +302,7 @@ def _oversample_rare_classes(
                 _nn.fit(_M[_idx])
                 _nn_cache["nn_by_cls"][_cls] = _nn
                 _nn_cache["idx_by_cls"][_cls] = _idx
-        except Exception as _nn_exc:
+        except Exception as _nn_exc:  # noqa: BLE001 — sklearn NN/vectorizer cold-start failures are diverse; fall back safely
             _log.warning("nn_mix index build failed: %s", _nn_exc)
             _nn_cache["failed"] = True
 
@@ -197,7 +319,7 @@ def _oversample_rare_classes(
             # Берём ближайшего соседа (не сам пример — пропускаем расстояние 0)
             _nbr_i = None
             for _d, _ni in zip(_dist[0], _nbrs[0]):
-                if _d > 1e-6:
+                if _d > _NN_MIX_SELF_DIST_EPS:
                     _nbr_i = int(_idx_cls[_ni])
                     break
             if _nbr_i is None:
@@ -207,8 +329,8 @@ def _oversample_rare_classes(
             _b_toks = _neighbour.split()
             if not _a_toks or not _b_toks:
                 return _augment_light_text(base_text)
-            # λ ~ Beta(0.4, 0.4) — предпочитает крайние смеси (как classic SMOTE weights)
-            _lam = float(_rng.beta(0.4, 0.4))
+            # λ ~ Beta(α, α) — предпочитает крайние смеси (как classic SMOTE weights)
+            _lam = float(_rng.beta(_NN_MIX_BETA_ALPHA, _NN_MIX_BETA_ALPHA))
             _n_a = max(1, int(round(len(_a_toks) * _lam)))
             _take_a = list(_rng.choice(_a_toks, size=_n_a, replace=False)) if _n_a <= len(_a_toks) \
                 else list(_a_toks)
@@ -218,7 +340,7 @@ def _oversample_rare_classes(
             _mixed = list(_take_a) + list(_take_b)
             _rng.shuffle(_mixed)
             return " ".join(str(t) for t in _mixed)
-        except Exception as _mix_exc:
+        except Exception as _mix_exc:  # noqa: BLE001 — best-effort augmentation; any failure falls back to augment_light
             _log.debug("nn_mix_text fallback to augment_light: %s", _mix_exc)
             return _augment_light_text(base_text)
 
@@ -249,10 +371,11 @@ def _oversample_rare_classes(
         return Xtr, ytr
 
     _orig = len(Xtr)
-    _combined = list(zip(_Xaug, _yaug))
-    _rng.shuffle(_combined)
-    Xtr = [x for x, _ in _combined]
-    ytr = [lbl for _, lbl in _combined]
+    # Single-pass permutation: O(N) index shuffle avoids building a list of
+    # (x, label) tuples and re-allocating two result lists.
+    _perm = _rng.permutation(len(_Xaug))
+    Xtr = [_Xaug[i] for i in _perm]
+    ytr = [_yaug[i] for i in _perm]
     if progress_cb:
         progress_cb(79.0, f"Балансировка: {len(Xtr)} примеров (было {_orig})")
     if log_cb:
@@ -297,7 +420,7 @@ def _oversample_hard_negatives(
             max_features=15_000, min_df=1,
         )
         _M = _vec.fit_transform(Xtr)
-    except Exception as _tfidf_exc:
+    except (ValueError, MemoryError, TypeError) as _tfidf_exc:
         _log.warning("oversample TF-IDF vectorizer failed: %s", _tfidf_exc)
         return Xtr, ytr
 
@@ -357,10 +480,9 @@ def _oversample_hard_negatives(
     if _n_added == 0:
         return Xtr, ytr
 
-    _combined = list(zip(_Xaug, _yaug))
-    _rng.shuffle(_combined)
-    Xtr_out = [x for x, _ in _combined]
-    ytr_out = [lbl for _, lbl in _combined]
+    _perm = _rng.permutation(len(_Xaug))
+    Xtr_out = [_Xaug[i] for i in _perm]
+    ytr_out = [_yaug[i] for i in _perm]
 
     if log_cb:
         _top_pairs = sorted(_pairs_processed, key=lambda p: -p[2])[:5]
@@ -381,8 +503,8 @@ _DROPOUT_FIELD_TAGS = frozenset(
 def _field_dropout_augment(
     Xtr: List[str],
     ytr: List[str],
-    dropout_prob: float = 0.15,
-    n_copies: int = 2,
+    dropout_prob: float = FIELD_DROPOUT_PROB_DEFAULT,
+    n_copies: int = FIELD_DROPOUT_COPIES_DEFAULT,
     random_state: int = 42,
     log_cb: Optional[Callable[[str], None]] = None,
 ) -> Tuple[List[str], List[str]]:
@@ -456,7 +578,7 @@ def detect_mislabeled_examples(
 
     try:
         proba = pipe.predict_proba(X)
-    except Exception as _proba_exc:
+    except (AttributeError, ValueError, RuntimeError) as _proba_exc:
         _log.warning("predict_proba failed in ROC-AUC section: %s", _proba_exc)
         return []
 
@@ -489,6 +611,54 @@ def detect_mislabeled_examples(
             f"(prob_true < {threshold:.0%})"
         )
     return results
+
+
+def _format_classification_report(rep_dict: Dict[str, Any], digits: int = 3) -> str:
+    """Формирует текстовый отчёт классификации из уже посчитанного dict'а.
+
+    Позволяет избежать двойного вызова sklearn.classification_report (раз для
+    текста, раз для dict'а). Формат совместим с sklearn, но строится за один
+    проход по готовым метрикам.
+    """
+    fmt = f"{{:.{digits}f}}"
+    rows: list[str] = []
+    headers = ("precision", "recall", "f1-score", "support")
+    w_label = max([10] + [len(str(k)) for k in rep_dict if k not in ("accuracy",)])
+    rows.append(
+        f"{'':>{w_label}}  "
+        + "  ".join(f"{h:>9}" for h in headers)
+    )
+    rows.append("")
+    # Классы — всё кроме специальных ключей
+    special = {"accuracy", "macro avg", "weighted avg"}
+    for label, metrics in rep_dict.items():
+        if label in special or not isinstance(metrics, dict):
+            continue
+        rows.append(
+            f"{str(label):>{w_label}}  "
+            f"{fmt.format(metrics.get('precision', 0.0)):>9}  "
+            f"{fmt.format(metrics.get('recall', 0.0)):>9}  "
+            f"{fmt.format(metrics.get('f1-score', 0.0)):>9}  "
+            f"{int(metrics.get('support', 0)):>9}"
+        )
+    rows.append("")
+    if "accuracy" in rep_dict:
+        # accuracy — скаляр; в dict поддержка — общая сумма примеров macro avg
+        _acc = rep_dict["accuracy"]
+        _support = int(rep_dict.get("macro avg", {}).get("support", 0)) if isinstance(
+            rep_dict.get("macro avg"), dict) else 0
+        rows.append(f"{'accuracy':>{w_label}}  {'':>9}  {'':>9}  {fmt.format(_acc):>9}  {_support:>9}")
+    for agg in ("macro avg", "weighted avg"):
+        m = rep_dict.get(agg)
+        if isinstance(m, dict):
+            rows.append(
+                f"{agg:>{w_label}}  "
+                f"{fmt.format(m.get('precision', 0.0)):>9}  "
+                f"{fmt.format(m.get('recall', 0.0)):>9}  "
+                f"{fmt.format(m.get('f1-score', 0.0)):>9}  "
+                f"{int(m.get('support', 0)):>9}"
+            )
+    return "\n".join(rows)
 
 
 def _compute_per_class_thresholds(
@@ -554,8 +724,10 @@ def _compute_validation_extras(
         proba = None
         pred = list(pipe.predict(Xva))
 
-    rep = classification_report(yva, pred, digits=3)
-    rep_dict = classification_report(yva, pred, digits=3, output_dict=True)
+    # Единый вызов classification_report — строим и dict, и текстовую форму
+    # из одного прохода, избегая двойного пересчёта метрик.
+    rep_dict = classification_report(yva, pred, digits=3, output_dict=True, zero_division=0)
+    rep = _format_classification_report(rep_dict, digits=3)
     extras["report_dict"] = rep_dict
 
     if log_cb:
@@ -579,7 +751,7 @@ def _compute_validation_extras(
             extras["roc_auc_macro"] = float(_roc)
             if log_cb:
                 log_cb(f"[Валидация] ROC-AUC macro={float(_roc):.3f}")
-        except Exception as _roc_exc:
+        except (ValueError, AttributeError, ImportError) as _roc_exc:
             if log_cb:
                 log_cb(f"[Валидация] ROC-AUC недоступен: {type(_roc_exc).__name__}: {_roc_exc}")
 
@@ -617,10 +789,21 @@ def _compute_validation_extras(
             _ece, _mce = _compute_ece_mce(proba, yva, classes)
             extras["ece"] = _ece
             extras["mce"] = _mce
+            _brier = _compute_brier_score(proba, yva, classes)
+            extras["brier"] = _brier
+            _pc_ece = _compute_per_class_ece(proba, yva, classes)
+            extras["per_class_ece"] = _pc_ece
             if log_cb:
                 _cal_q = "хорошо" if _ece < 0.05 else ("удовл." if _ece < 0.10 else "плохо")
-                log_cb(f"[Калибровка] ECE={_ece:.4f}  MCE={_mce:.4f}  ({_cal_q})")
-        except Exception as _te:
+                log_cb(
+                    f"[Калибровка] ECE={_ece:.4f}  MCE={_mce:.4f}  "
+                    f"Brier={_brier:.4f}  ({_cal_q})"
+                )
+                if _pc_ece:
+                    _worst = sorted(_pc_ece.items(), key=lambda kv: kv[1], reverse=True)[:3]
+                    _lines = ", ".join(f"«{c}»={v:.3f}" for c, v in _worst)
+                    log_cb(f"[Калибровка] Худшие per-class ECE: {_lines}")
+        except Exception as _te:  # noqa: BLE001 — calibration is diagnostic-only; any failure must not block training
             _log.debug("temperature scaling failed: %s", _te)
 
     # ── Анализ путаниц: топ ошибочных пар с примерами текстов ──
@@ -690,9 +873,69 @@ def _compute_ece_mce(
             ece_acc += mask.sum() / n * gap
             mce_acc = max(mce_acc, gap)
         return float(ece_acc), float(mce_acc)
-    except Exception as _ece_exc:
+    except (ValueError, KeyError, IndexError, TypeError, ZeroDivisionError) as _ece_exc:
         _log.debug("ECE/MCE computation failed: %s", _ece_exc)
         return 0.0, 0.0
+
+
+def _compute_brier_score(
+    proba: np.ndarray,
+    yva: List[str],
+    classes: List[str],
+) -> float:
+    """Multi-class Brier Score (mean squared error против one-hot правды).
+
+    Brier = (1/N) · Σ_i Σ_k (p_ik − y_ik)².
+    Чем ниже, тем лучше. Для калиброванного бинарного классификатора идеал ≈ 0.
+    """
+    try:
+        class_to_idx = {c: i for i, c in enumerate(classes)}
+        n, k = proba.shape
+        one_hot = np.zeros_like(proba)
+        for i, yi in enumerate(yva):
+            j = class_to_idx.get(str(yi))
+            if j is not None:
+                one_hot[i, j] = 1.0
+        diff = proba - one_hot
+        return float(np.mean(np.sum(diff * diff, axis=1)))
+    except (ValueError, KeyError, IndexError, TypeError) as _bs_exc:
+        _log.debug("Brier computation failed: %s", _bs_exc)
+        return 0.0
+
+
+def _compute_per_class_ece(
+    proba: np.ndarray,
+    yva: List[str],
+    classes: List[str],
+    n_bins: int = 10,
+) -> Dict[str, float]:
+    """Per-class ECE: один-против-всех binning вероятности класса c."""
+    try:
+        class_to_idx = {c: i for i, c in enumerate(classes)}
+        y_idx = np.array([class_to_idx.get(str(yi), -1) for yi in yva])
+        n_bins = max(3, min(n_bins, len(proba) // 20))
+        bin_edges = np.linspace(0.0, 1.0, n_bins + 1)
+        out: Dict[str, float] = {}
+        for j, cls in enumerate(classes):
+            conf_j = proba[:, j]
+            correct_j = (y_idx == j).astype(float)
+            n = len(conf_j)
+            if n == 0:
+                out[str(cls)] = 0.0
+                continue
+            ece_j = 0.0
+            for lo, hi in zip(bin_edges[:-1], bin_edges[1:]):
+                mask = (conf_j >= lo) & (conf_j < hi)
+                if not mask.any():
+                    continue
+                bin_acc = correct_j[mask].mean()
+                bin_conf = conf_j[mask].mean()
+                ece_j += mask.sum() / n * abs(bin_acc - bin_conf)
+            out[str(cls)] = float(ece_j)
+        return out
+    except (ValueError, KeyError, IndexError, TypeError, ZeroDivisionError) as _pc_exc:
+        _log.debug("per-class ECE failed: %s", _pc_exc)
+        return {}
 
 
 def compute_temperature_scaling(
@@ -723,12 +966,12 @@ def compute_temperature_scaling(
     def _nll(T: float) -> float:
         if T <= 0.01:
             return 1e10
-        _scaled = np.power(np.clip(proba, 1e-10, 1.0), 1.0 / T)
+        _scaled = np.power(np.clip(proba, TEMP_SCALE_EPS, 1.0), 1.0 / T)
         _sums = _scaled.sum(axis=1, keepdims=True)
         _sums[_sums == 0] = 1.0
         _p_cal = _scaled / _sums
         _p_correct = _p_cal[np.arange(len(_y_idx)), _y_idx]
-        return float(-np.mean(np.log(np.clip(_p_correct, 1e-10, 1.0))))
+        return float(-np.mean(np.log(np.clip(_p_correct, TEMP_SCALE_EPS, 1.0))))
 
     _res = minimize_scalar(_nll, bounds=(0.1, 5.0), method="bounded")
     _T = float(_res.x)
@@ -785,92 +1028,105 @@ def cv_evaluate(
                 f"  (фолды: {_fold_str})"
             )
         return result
-    except Exception as _cve:
+    except Exception as _cve:  # noqa: BLE001 — CV scorer can raise sklearn internals (BrokenProcessPool, FitFailedWarning-as-error); log + return
         if log_cb:
             log_cb(f"[CV] не удалось выполнить: {type(_cve).__name__}: {_cve}")
         return {}
 
 
-def train_model(
+def _log_training_start(
     X: List[str],
     y: List[str],
-    features: Any,  # FeatureUnion (TF-IDF) или SBERTVectorizer
+    clf_type: str,
     C: float,
     max_iter: int,
     balanced: bool,
-    test_size: float,
+    log_cb: Optional[Callable[[str], None]],
+) -> None:
+    """Логирует базовую статистику и, при необходимости, предупреждение о дисбалансе."""
+    if log_cb is None:
+        return
+    n_classes = len(set(y))
+    class_w = "balanced" if balanced else "None"
+    log_cb(f"[Обучение] Выборка: {len(X)} примеров | классов: {n_classes}")
+    log_cb(f"[Обучение] Классификатор: {clf_type} | C={C} | max_iter={max_iter} | class_weight={class_w}")
+    cnt = Counter(y)
+    if len(cnt) < 2:
+        return
+    max_c, min_c = max(cnt.values()), min(cnt.values())
+    if min_c > 0 and max_c / min_c > 10:
+        top_cls = max(cnt, key=cnt.get)
+        bot_cls = min(cnt, key=cnt.get)
+        log_cb(
+            f"⚠️  [Дисбаланс] {top_cls!r}={max_c} vs {bot_cls!r}={min_c} "
+            f"(ratio={max_c/min_c:.0f}x). Рекомендуется class_weight=balanced или SMOTE."
+        )
+
+
+def _apply_label_smoothing(
+    ytr: List[str],
+    *,
+    eps: float,
     random_state: int,
-    calib_method: str = "sigmoid",
-    progress_cb: Optional[Callable[[float, str], None]] = None,
-    use_smote: bool = True,
-    oversample_strategy: str = "cap",
-    max_dup_per_sample: int = 5,
-    log_cb: Optional[Callable[[str], None]] = None,
-    run_cv: bool = False,
-    use_hard_negatives: bool = False,
-    use_field_dropout: bool = False,
-    field_dropout_prob: float = 0.15,
-    field_dropout_copies: int = 2,
-    use_label_smoothing: bool = False,
-    label_smoothing_eps: float = 0.05,
-) -> Tuple[Pipeline, str, str, Optional[List[str]], Optional[Any], Dict]:
+    log_cb: Optional[Callable[[str], None]],
+) -> List[str]:
+    """Label smoothing для hinge/hard-label классификаторов: eps% примеров
+    получают случайную метку (aka «label noise injection»). Эффект —
+    регуляризация границ решений, что функционально близко к классическому
+    label smoothing для soft-label loss.
     """
-    Обучает Pipeline(features → classifier).
+    if eps <= 0.0:
+        return list(ytr)
+    cls_all = sorted(set(ytr))
+    if len(cls_all) < 2:
+        return list(ytr)
+    n_flip = int(len(ytr) * float(eps))
+    if n_flip <= 0:
+        return list(ytr)
+    rng_ls = np.random.default_rng(int(random_state) + 7)
+    idx_flip = rng_ls.choice(len(ytr), size=n_flip, replace=False)
+    ytr_new = list(ytr)
+    for i in idx_flip:
+        others = [c for c in cls_all if c != ytr_new[i]]
+        if others:
+            ytr_new[i] = str(rng_ls.choice(others))
+    if log_cb:
+        log_cb(f"[Label-smoothing] перемаркировано {n_flip} примеров "
+               f"(eps={eps:.2f})")
+    return ytr_new
 
-    Returns:
-        pipe        — обученный sklearn Pipeline
-        clf_type    — строка с типом классификатора
-        report      — текстовый classification_report (или сообщение о пропуске валидации)
-        labels      — список классов (или None если валидация пропущена)
-        cm          — confusion matrix (или None если валидация пропущена)
-        extras      — доп. данные: {'thresh_90', 'thresh_75', 'report_dict'}
+
+def _augment_training_data(
+    Xtr: List[str],
+    ytr: List[str],
+    *,
+    random_state: int,
+    use_fuzzy_dedup: bool,
+    fuzzy_dedup_threshold: int,
+    use_smote: bool,
+    oversample_strategy: str,
+    max_dup_per_sample: int,
+    use_hard_negatives: bool,
+    use_field_dropout: bool,
+    field_dropout_prob: float,
+    field_dropout_copies: int,
+    use_label_smoothing: bool,
+    label_smoothing_eps: float,
+    log_cb: Optional[Callable[[str], None]],
+    progress_cb: Optional[Callable[[float, str], None]],
+) -> Tuple[List[str], List[str]]:
+    """Последовательность аугментаций обучающей выборки.
+
+    Порядок применения важен: fuzzy_dedup → SMOTE → hard_negatives →
+    field_dropout → label_smoothing. Каждая ступень опциональна и
+    отключается соответствующим булевым флагом.
     """
-    clf, clf_type = make_classifier(y, C=C, max_iter=max_iter, balanced=balanced,
-                                    calib_method=calib_method)
-    pipe = Pipeline([("features", features), ("clf", clf)])
-
-    _n_classes = len(set(y))
-    _class_w = "balanced" if balanced else "None"
-    if log_cb:
-        log_cb(f"[Обучение] Выборка: {len(X)} примеров | классов: {_n_classes}")
-        log_cb(f"[Обучение] Классификатор: {clf_type} | C={C} | max_iter={max_iter} | class_weight={_class_w}")
-        _cnt_check = Counter(y)
-        if len(_cnt_check) >= 2:
-            _max_c, _min_c = max(_cnt_check.values()), min(_cnt_check.values())
-            if _min_c > 0 and _max_c / _min_c > 10:
-                _top_cls = max(_cnt_check, key=_cnt_check.get)
-                _bot_cls = min(_cnt_check, key=_cnt_check.get)
-                log_cb(
-                    f"⚠️  [Дисбаланс] {_top_cls!r}={_max_c} vs {_bot_cls!r}={_min_c} "
-                    f"(ratio={_max_c/_min_c:.0f}x). Рекомендуется class_weight=balanced или SMOTE."
-                )
-
-    # ── Кросс-валидация ДО обучения (pipe ещё не обучен) ──────────────────
-    _cv_results: Dict[str, Any] = {}
-    if run_cv:
-        _cv_results = cv_evaluate(X, y, pipe, n_splits=5, log_cb=log_cb,
-                                  progress_cb=progress_cb)
-
-    if progress_cb:
-        progress_cb(60.0, "Разделение обучение/тест…")
-
-    # Безопасный holdout: только если достаточно данных и классов.
-    # stratify=y требует минимум 2 примера на класс — иначе ValueError.
-    early = _maybe_skip_validation(X, y, test_size, pipe, clf_type, log_cb, progress_cb)
-    if early is not None:
-        # early = (pipe, clf_type, rep, None, None, extras_dict)
-        # extras_dict is mutable — safely update in place
-        early[-1].update(_cv_results)
-        return early
-
-    Xtr, Xva, ytr, yva = train_test_split(
-        X, y,
-        test_size=float(test_size),
-        random_state=int(random_state),
-        stratify=y,
-    )
-    if log_cb:
-        log_cb(f"[Обучение] Разбивка: обучение={len(Xtr)}, валидация={len(Xva)} (test_size={test_size})")
+    if use_fuzzy_dedup:
+        Xtr, ytr, n_dedup = fuzzy_string_dedup(
+            Xtr, ytr, threshold=int(fuzzy_dedup_threshold), log_cb=log_cb,
+        )
+        if n_dedup and log_cb:
+            log_cb(f"[Обучение] После fuzzy-dedup: обучение={len(Xtr)}")
 
     if use_smote:
         Xtr, ytr = _oversample_rare_classes(
@@ -893,26 +1149,257 @@ def train_model(
             log_cb=log_cb,
         )
 
-    # Label smoothing для hinge/hard-label классификаторов: eps% примеров
-    # получают случайную метку (aka «label noise injection»). Эффект —
-    # регуляризация границ решений, что функционально близко к классическому
-    # label smoothing для soft-label loss.
-    if use_label_smoothing and label_smoothing_eps > 0.0:
-        _cls_all = sorted(set(ytr))
-        if len(_cls_all) >= 2:
-            _rng_ls = np.random.default_rng(int(random_state) + 7)
-            _n_flip = int(len(ytr) * float(label_smoothing_eps))
-            if _n_flip > 0:
-                _idx_flip = _rng_ls.choice(len(ytr), size=_n_flip, replace=False)
-                _ytr_new = list(ytr)
-                for _i in _idx_flip:
-                    _others = [c for c in _cls_all if c != _ytr_new[_i]]
-                    if _others:
-                        _ytr_new[_i] = str(_rng_ls.choice(_others))
-                ytr = _ytr_new
-                if log_cb:
-                    log_cb(f"[Label-smoothing] перемаркировано {_n_flip} примеров "
-                           f"(eps={label_smoothing_eps:.2f})")
+    if use_label_smoothing:
+        ytr = _apply_label_smoothing(
+            ytr,
+            eps=float(label_smoothing_eps),
+            random_state=random_state,
+            log_cb=log_cb,
+        )
+
+    return Xtr, ytr
+
+
+def _log_svd_explained_variance(
+    pipe: Pipeline,
+    log_cb: Optional[Callable[[str], None]],
+) -> None:
+    """Если в features-ступени есть TruncatedSVD, логирует explained variance."""
+    if log_cb is None:
+        return
+    try:
+        feat_step = pipe.named_steps.get("features")
+        svd_step = None
+        if feat_step is not None:
+            if hasattr(feat_step, "named_steps"):
+                svd_step = feat_step.named_steps.get("svd")
+            elif hasattr(feat_step, "transformer_list"):
+                for _tname, tr in feat_step.transformer_list:
+                    if hasattr(tr, "named_steps"):
+                        svd_step = tr.named_steps.get("svd")
+                        if svd_step is not None:
+                            break
+        if svd_step is not None and hasattr(svd_step, "explained_variance_ratio_"):
+            var_total = float(svd_step.explained_variance_ratio_.sum())
+            n_comp = len(svd_step.explained_variance_ratio_)
+            log_cb(f"[SVD] объяснённая дисперсия: {var_total:.3f} ({n_comp} компонент)")
+    except Exception as svd_exc:  # noqa: BLE001 — diagnostic logging only; skip silently on any inspection failure
+        log_cb(f"[SVD] диагностика недоступна: {type(svd_exc).__name__}: {svd_exc}")
+
+
+def _estimate_model_size_bytes(
+    pipe: Pipeline,
+    log_cb: Optional[Callable[[str], None]],
+) -> Optional[int]:
+    """Быстрая аналитическая оценка размера модели (uncompressed).
+
+    Обходит TfidfVectorizer / TruncatedSVD / linear классификаторы и
+    суммирует `vocabulary_ bytes + idf_.nbytes + components_.nbytes +
+    coef_.nbytes + intercept_.nbytes`. Это в ~50 раз быстрее чем
+    `joblib.dump(..., compress=0)` (которому нужно сериализовать весь граф)
+    и даёт близкую к реальности оценку без I/O.
+    """
+    try:
+        import numpy as _np
+
+        total = 0
+
+        def _vocab_bytes(voc) -> int:
+            # Упрощённая оценка: средняя длина ключа в UTF-8 + int index (8 байт) + dict overhead (~50).
+            if not voc:
+                return 0
+            n = len(voc)
+            avg_len = sum(len(k.encode("utf-8")) for k in list(voc.keys())[:200]) / max(1, min(200, n))
+            return int(n * (avg_len + 8 + 50))
+
+        def _arr_bytes(obj, attr) -> int:
+            a = getattr(obj, attr, None)
+            if a is None:
+                return 0
+            nb = getattr(a, "nbytes", None)
+            if nb is not None:
+                return int(nb)
+            try:
+                return int(_np.asarray(a).nbytes)
+            except Exception:  # noqa: BLE001
+                return 0
+
+        def _walk(obj):
+            nonlocal total
+            # TF-IDF: vocab + idf
+            if hasattr(obj, "vocabulary_"):
+                total += _vocab_bytes(getattr(obj, "vocabulary_", None))
+                total += _arr_bytes(obj, "idf_")
+            # TruncatedSVD: components + explained_variance
+            if hasattr(obj, "components_"):
+                total += _arr_bytes(obj, "components_")
+                total += _arr_bytes(obj, "explained_variance_")
+            # Linear / calibrated classifiers
+            for attr in ("coef_", "intercept_", "classes_"):
+                if hasattr(obj, attr):
+                    total += _arr_bytes(obj, attr)
+            # CalibratedClassifierCV wraps sub-estimators
+            for sub_attr in ("calibrated_classifiers_", "estimators_"):
+                subs = getattr(obj, sub_attr, None)
+                if subs:
+                    for sub in subs:
+                        _walk(sub)
+                        # Calibrator arrays on each fold
+                        for cal_attr in ("calibrators_", "calibrators"):
+                            cals = getattr(sub, cal_attr, None)
+                            if cals:
+                                for cal in cals:
+                                    for a in ("a_", "b_", "X_thresholds_", "y_thresholds_"):
+                                        total += _arr_bytes(cal, a)
+            # Recurse: Pipeline / FeatureUnion
+            if hasattr(obj, "named_steps"):
+                for step in obj.named_steps.values():
+                    _walk(step)
+            if hasattr(obj, "transformer_list"):
+                for _name, tr in obj.transformer_list:
+                    _walk(tr)
+
+        _walk(pipe)
+        # Fixed overhead for pickle framing / class refs. Empirically
+        # observed 15-30 KB on small pipes.
+        size = int(total) + 20_000
+        if log_cb:
+            log_cb(f"[Обучение] Размер модели (оценка): {size // 1024} КБ")
+        return size
+    except Exception as sz_exc:  # noqa: BLE001 — size estimate is telemetry; skip on exotic pipes
+        _log.debug("model_size_bytes estimation failed: %s", sz_exc)
+        return None
+
+
+def _resolve_training_options(
+    options: Optional[TrainingOptions],
+    legacy_kwargs: Dict[str, Any],
+) -> TrainingOptions:
+    """Валидирует совместимость *options* и legacy-kwargs.
+
+    Если ``options`` передан — legacy_kwargs запрещены (жёсткий конфликт).
+    Иначе из legacy_kwargs собирается ``TrainingOptions``, сопровождаясь
+    ``DeprecationWarning``. Незнакомые ключи → :class:`TypeError`.
+    """
+    if options is not None:
+        if legacy_kwargs:
+            raise TypeError(
+                "train_model(): нельзя одновременно передавать options=TrainingOptions "
+                f"и legacy-kwargs ({sorted(legacy_kwargs)}). Выберите один API."
+            )
+        return options
+    if not legacy_kwargs:
+        return TrainingOptions()
+    unknown = set(legacy_kwargs) - _TRAINING_OPTIONS_FIELDS
+    if unknown:
+        raise TypeError(
+            f"train_model(): неизвестные keyword-аргументы: {sorted(unknown)}"
+        )
+    warnings.warn(
+        "Passing " + ", ".join(sorted(legacy_kwargs))
+        + " as keyword arguments is deprecated; "
+        "use options=TrainingOptions(...) instead.",
+        DeprecationWarning,
+        stacklevel=3,
+    )
+    return TrainingOptions(**legacy_kwargs)
+
+
+def train_model(
+    X: List[str],
+    y: List[str],
+    features: Any,  # FeatureUnion (TF-IDF) или SBERTVectorizer
+    C: float,
+    max_iter: int,
+    balanced: bool,
+    test_size: float,
+    random_state: int,
+    *,
+    options: Optional[TrainingOptions] = None,
+    progress_cb: Optional[Callable[[float, str], None]] = None,
+    log_cb: Optional[Callable[[str], None]] = None,
+    **legacy_kwargs: Any,
+) -> Tuple[Pipeline, str, str, Optional[List[str]], Optional[Any], Dict]:
+    """
+    Обучает Pipeline(features → classifier).
+
+    API:
+        ``options`` — инстанс :class:`TrainingOptions` с флагами аугментации,
+        калибровки и CV. Если ``None``, используются дефолты. Для обратной
+        совместимости принимаются плоские kwargs (``use_smote=...``,
+        ``calib_method=...`` и т.п.) — они собираются в ``TrainingOptions``
+        с ``DeprecationWarning``. Удалим в следующем major release.
+
+    Функция оркестрирует стадии, каждая из которых вынесена в отдельную
+    helper-функцию:
+      _log_training_start       — диагностика и предупреждение о дисбалансе
+      cv_evaluate               — опциональная K-fold кросс-валидация
+      _maybe_skip_validation    — ранний выход при маленькой выборке
+      _augment_training_data    — fuzzy_dedup → SMOTE → hard_negatives →
+                                  field_dropout → label_smoothing
+      _log_svd_explained_variance
+      _compute_validation_extras — метрики holdout
+      _estimate_model_size_bytes
+
+    Returns:
+        pipe        — обученный sklearn Pipeline
+        clf_type    — строка с типом классификатора
+        report      — текстовый classification_report (или сообщение о пропуске валидации)
+        labels      — список классов (или None если валидация пропущена)
+        cm          — confusion matrix (или None если валидация пропущена)
+        extras      — доп. данные: {'thresh_90', 'thresh_75', 'report_dict', ...}
+    """
+    opts = _resolve_training_options(options, legacy_kwargs)
+
+    clf, clf_type = make_classifier(y, C=C, max_iter=max_iter, balanced=balanced,
+                                    calib_method=opts.calib_method)
+    pipe = Pipeline([("features", features), ("clf", clf)])
+
+    _log_training_start(X, y, clf_type, C, max_iter, balanced, log_cb)
+
+    # ── Кросс-валидация ДО обучения (pipe ещё не обучен) ──────────────────
+    _cv_results: Dict[str, Any] = {}
+    if opts.run_cv:
+        _cv_results = cv_evaluate(X, y, pipe, n_splits=5, log_cb=log_cb,
+                                  progress_cb=progress_cb)
+
+    if progress_cb:
+        progress_cb(60.0, "Разделение обучение/тест…")
+
+    # Безопасный holdout: только если достаточно данных и классов.
+    # stratify=y требует минимум 2 примера на класс — иначе ValueError.
+    early = _maybe_skip_validation(X, y, test_size, pipe, clf_type, log_cb, progress_cb)
+    if early is not None:
+        # early = (pipe, clf_type, rep, None, None, extras_dict)
+        early[-1].update(_cv_results)
+        return early
+
+    Xtr, Xva, ytr, yva = train_test_split(
+        X, y,
+        test_size=float(test_size),
+        random_state=int(random_state),
+        stratify=y,
+    )
+    if log_cb:
+        log_cb(f"[Обучение] Разбивка: обучение={len(Xtr)}, валидация={len(Xva)} (test_size={test_size})")
+
+    Xtr, ytr = _augment_training_data(
+        Xtr, ytr,
+        random_state=random_state,
+        use_fuzzy_dedup=opts.use_fuzzy_dedup,
+        fuzzy_dedup_threshold=opts.fuzzy_dedup_threshold,
+        use_smote=opts.use_smote,
+        oversample_strategy=opts.oversample_strategy,
+        max_dup_per_sample=opts.max_dup_per_sample,
+        use_hard_negatives=opts.use_hard_negatives,
+        use_field_dropout=opts.use_field_dropout,
+        field_dropout_prob=opts.field_dropout_prob,
+        field_dropout_copies=opts.field_dropout_copies,
+        use_label_smoothing=opts.use_label_smoothing,
+        label_smoothing_eps=opts.label_smoothing_eps,
+        log_cb=log_cb,
+        progress_cb=progress_cb,
+    )
 
     if progress_cb:
         progress_cb(80.0, "Обучение…")
@@ -925,26 +1412,7 @@ def train_model(
     if log_cb:
         log_cb(f"[Обучение] Время обучения: {_training_duration_sec:.1f}с")
 
-    # Логируем объяснённую дисперсию SVD если он присутствует в пайплайне
-    if log_cb:
-        try:
-            _feat_step = pipe.named_steps.get("features")
-            _svd_step = None
-            if _feat_step is not None:
-                if hasattr(_feat_step, "named_steps"):
-                    _svd_step = _feat_step.named_steps.get("svd")
-                elif hasattr(_feat_step, "transformer_list"):
-                    for _tname, _tr in _feat_step.transformer_list:
-                        if hasattr(_tr, "named_steps"):
-                            _svd_step = _tr.named_steps.get("svd")
-                            if _svd_step is not None:
-                                break
-            if _svd_step is not None and hasattr(_svd_step, "explained_variance_ratio_"):
-                _var_total = float(_svd_step.explained_variance_ratio_.sum())
-                _n_comp = len(_svd_step.explained_variance_ratio_)
-                log_cb(f"[SVD] объяснённая дисперсия: {_var_total:.3f} ({_n_comp} компонент)")
-        except Exception as _svd_exc:
-            log_cb(f"[SVD] диагностика недоступна: {type(_svd_exc).__name__}: {_svd_exc}")
+    _log_svd_explained_variance(pipe, log_cb)
 
     if progress_cb:
         progress_cb(90.0, "Валидация…")
@@ -953,17 +1421,9 @@ def train_model(
     extras["n_train"] = len(Xtr)
     extras["n_test"] = len(Xva)
     extras["training_duration_sec"] = round(_training_duration_sec, 3)
-    # Model size estimate via joblib serialisation (in-memory, no disk I/O)
-    try:
-        import io as _io
-        import joblib as _joblib
-        _buf = _io.BytesIO()
-        _joblib.dump(pipe, _buf, compress=0)
-        extras["model_size_bytes"] = _buf.tell()
-        if log_cb:
-            log_cb(f"[Обучение] Размер модели: {extras['model_size_bytes'] // 1024} КБ")
-    except Exception as _sz_exc:
-        _log.debug("model_size_bytes estimation failed: %s", _sz_exc)
+    _model_size = _estimate_model_size_bytes(pipe, log_cb)
+    if _model_size is not None:
+        extras["model_size_bytes"] = _model_size
     extras.update(_cv_results)
 
     return pipe, clf_type, rep, labels, cm, extras
@@ -1048,7 +1508,7 @@ def find_best_c(
                 import gc as _gc
                 _gc.collect()   # освобождаем то, что можно, до выхода из функции
             raise
-        except Exception as _e:
+        except Exception as _e:  # noqa: BLE001 — sklearn CV for a single C can fail for pathological splits; mark C=0 and continue
             _log.warning("GridSearch: cross_val_score failed for C=%s: %s", c, _e)
             scores[c] = 0.0
 
@@ -1123,7 +1583,7 @@ def optuna_tune(
                         if _ngram_min <= _ngram_max:
                             _step.ngram_range = (_ngram_min, _ngram_max)
                         break
-        except Exception as _feat_exc:
+        except Exception as _feat_exc:  # noqa: BLE001 — sklearn FeatureUnion clone can raise varied errors; fall back to original features
             _log.debug("optuna feature clone failed: %s", _feat_exc)
             feat_clone = features
 
@@ -1133,7 +1593,7 @@ def optuna_tune(
                 pipe, X, y, cv=skf, scoring="f1_macro", n_jobs=n_jobs,
             )
             score = float(np.mean(cv_scores))
-        except Exception as _cv_exc:
+        except Exception as _cv_exc:  # noqa: BLE001 — Optuna trial must never crash outer study; score=0 signals bad config
             _log.debug("optuna cross_val_score failed: %s", _cv_exc)
             score = 0.0
 
@@ -1229,7 +1689,7 @@ def confident_learning_detect(
                     global_ci = cls_idx.get(cls_name, -1)
                     if global_ci >= 0:
                         oof_proba[global_i, global_ci] = fold_proba[local_i, local_ci]
-        except Exception as _e:
+        except Exception as _e:  # noqa: BLE001 — single fold failure must not abort CL pipeline; other folds compensate
             _log.warning("Confident Learning fold %d failed: %s", fold_i, _e)
 
     # Пороги уверенности по классу

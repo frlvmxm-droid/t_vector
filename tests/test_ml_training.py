@@ -5,7 +5,13 @@ import pytest
 from collections import Counter
 from unittest.mock import MagicMock, patch
 
-from ml_training import make_classifier, train_model, cv_evaluate, compute_temperature_scaling
+from ml_training import (
+    TrainingOptions,
+    compute_temperature_scaling,
+    cv_evaluate,
+    make_classifier,
+    train_model,
+)
 
 
 # ── make_classifier ──────────────────────────────────────────────────────────
@@ -74,7 +80,7 @@ def test_train_model_returns_pipeline_and_report():
         X=X, y=y, features=_simple_vectorizer(),
         C=1.0, max_iter=200, balanced=True,
         test_size=0.2, random_state=42,
-        use_smote=False,
+        options=TrainingOptions(use_smote=False),
     )
     assert pipe is not None
     assert isinstance(clf_type, str) and len(clf_type) > 0
@@ -88,7 +94,7 @@ def test_train_model_with_two_classes():
         X=X, y=y, features=_simple_vectorizer(),
         C=1.0, max_iter=200, balanced=False,
         test_size=0.2, random_state=0,
-        use_smote=False,
+        options=TrainingOptions(use_smote=False),
     )
     assert pipe is not None
     # Validate the pipeline can predict
@@ -104,7 +110,7 @@ def test_train_model_skips_validation_for_tiny_dataset():
         X=X, y=y, features=_simple_vectorizer(),
         C=1.0, max_iter=100, balanced=False,
         test_size=0.2, random_state=42,
-        use_smote=False,
+        options=TrainingOptions(use_smote=False),
     )
     assert pipe is not None
     # When validation is skipped, labels may be None
@@ -125,7 +131,7 @@ def test_train_model_progress_callback_called():
         C=1.0, max_iter=100, balanced=False,
         test_size=0.2, random_state=42,
         progress_cb=_cb,
-        use_smote=False,
+        options=TrainingOptions(use_smote=False),
     )
     assert len(called) > 0
     pcts = [c[0] for c in called]
@@ -141,7 +147,7 @@ def test_train_model_log_callback_called():
         C=1.0, max_iter=100, balanced=False,
         test_size=0.2, random_state=42,
         log_cb=logs.append,
-        use_smote=False,
+        options=TrainingOptions(use_smote=False),
     )
     assert any("Обучение" in msg or "классов" in msg for msg in logs)
 
@@ -153,7 +159,7 @@ def test_train_model_extras_contains_thresholds():
         X=X, y=y, features=_simple_vectorizer(),
         C=1.0, max_iter=200, balanced=False,
         test_size=0.3, random_state=7,
-        use_smote=False,
+        options=TrainingOptions(use_smote=False),
     )
     assert isinstance(extras, dict)
 
@@ -166,8 +172,7 @@ def test_train_model_different_calib_methods(calib_method):
         X=X, y=y, features=_simple_vectorizer(),
         C=1.0, max_iter=200, balanced=False,
         test_size=0.2, random_state=42,
-        calib_method=calib_method,
-        use_smote=False,
+        options=TrainingOptions(calib_method=calib_method, use_smote=False),
     )
     assert pipe is not None
 

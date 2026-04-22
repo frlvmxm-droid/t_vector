@@ -316,7 +316,7 @@ class TestRedirectWarnings:
         original = warnings.showwarning
         try:
             redirect_warnings()
-            warnings.warn("test warning message", UserWarning)
+            warnings.warn("test warning message", UserWarning, stacklevel=2)
             assert any("test warning message" in m for m in received)
         finally:
             warnings.showwarning = original
