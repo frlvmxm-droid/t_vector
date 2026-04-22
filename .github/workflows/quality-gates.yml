@@ -147,7 +147,7 @@ jobs:
           echo "SBOM entries: $(python -c 'import json;print(len(json.load(open(\"sbom.json\")).get(\"components\",[])))')"
 
       - name: Upload SBOM artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sbom-cyclonedx
           path: sbom.json
@@ -197,7 +197,7 @@ jobs:
 
       - name: Upload coverage artifact
         if: matrix.python == '3.11'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-xml
           path: coverage.xml
