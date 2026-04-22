@@ -7,14 +7,18 @@
 ## Контекст
 
 Исторически проект — desktop-Tkinter-приложение (`app.py`,
-`app_train.py`, `app_apply.py`, `app_cluster.py`). Принято решение
-перевести UI на браузерный вариант (Voilà + ipywidgets), сохранив
-визуальный дизайн из `ctk_migration_pack/BankReasonTrainer.html`.
+`app_train.py`, `app_apply.py`, `app_cluster.py`). В ходе миграции
+UI переведён на браузерный вариант (Voilà + ipywidgets), исходный
+визуальный дизайн из `ctk_migration_pack/BankReasonTrainer.html` и
+палитры `ui_theme_ctk.py:PALETTES` перенесены в
+`ui_widgets/theme.py`. После этого сам пакет `ctk_migration_pack/`
+удалён (см. git history до коммита Sprint 2.4).
 
 Сервисный слой (`app_train_service`, `apply_prediction_service`,
-`cluster_workflow_service`, `app_cluster_pipeline`) уже оторван от
-Tk и покрыт тестами. Web-UI (`ui_widgets/*`) построен поверх него,
-имеет session save/restore и работает в Voilà cold-start за ~1.4с.
+`cluster_workflow_service`, `app_cluster_pipeline`) всегда был
+Tk-free и покрыт тестами. Web-UI (`ui_widgets/*`) построен поверх
+него, имеет session save/restore и работает в Voilà cold-start за
+~1.4с.
 
 ## Статус «что уже сделано»
 
@@ -28,30 +32,24 @@ Tk и покрыт тестами. Web-UI (`ui_widgets/*`) построен по
 | `_service_snap` unification (Fix C) | ✅ complete |
 | JupyterHub admin-docs | ✅ `docs/JUPYTERHUB_UI.md` |
 | **Спринт 1 — launcher'ы + quickstart** | ✅ complete (`run_web.sh`, `run_web.bat`, `docs/QUICKSTART_WEB_UI.md`, README §8.3) |
+| **Спринт 2 — темы + theme-switcher** | ✅ complete (PALETTES dark-teal/paper/amber-crt, `apply_theme`/`rebuild_css`, accent kind, `field_label`/`separator`, `section_card(right=)`, sidebar switcher + persist `ui.theme`) |
+| **Спринт 3 — удаление desktop-UI** | ✅ complete (минус 19 файлов Tk/CTK, 6 лаунчеров/сборка, 9 UI-тестов, `customtkinter`/`pystray`/`Pillow` из deps, Xvfb-job из CI, переписана документация; кумулятивно −20 986 / +1 453 LoC vs pre-Sprint-3) |
 
 ## Известные блокеры / gap'ы
 
-### Блокеры запуска
-- ✅ Закрыты в Спринте 1 (`run_web.sh`/`run_web.bat` + quickstart).
-  `bootstrap_run.py` как отдельный desktop-entry уйдёт в Спринте 3.
+*Все перечисленные ниже блокеры закрыты в ходе Спринтов 1–3. Оставлено
+как исторический контекст для git blame.*
 
-### Дизайн-дыры vs ctk_migration_pack
-- Только одна тема (Dark Teal) вместо трёх (добавить Paper, Amber-CRT).
-- Нет theme-switcher в sidebar.
-- `section_card` не поддерживает right-slot для header-кнопок.
-- Нет helper'ов `field_label()` и `separator()`.
-- `chip()` / `badge()` — не покрывают все 6 kind'ов (нет `accent`;
-  канонический список: `default | accent | ok | warn | err | info`).
+### Блокеры запуска — ✅ закрыты (Спринт 1)
 
-### Архитектурные долги
-- **`app_cluster.run_cluster()`** — сейчас ~100 строк
-  (`app_cluster.py:3410–3510`), уже делегирует в
-  `ClusteringWorkflow.run()`. Старая оценка «951 строка» устарела.
-  Будет удалён целиком вместе с `app_cluster.py` в Спринте 3.
-- Deprecated shims в `core/` и `utils/` — мёртвый re-export код
-  (адресуется в Спринте 3).
-- `customtkinter`, `pystray` в `pyproject.toml` — удаляются в
-  Спринте 3 (вместе с `uv lock` регенерацией).
+### Дизайн-дыры vs ctk_migration_pack — ✅ закрыты (Спринт 2)
+
+### Архитектурные долги — ✅ закрыты (Спринт 3)
+- `app_cluster.run_cluster()` и весь `app_cluster.py` удалены; бизнес-
+  логика живёт в `cluster_workflow_service.ClusteringWorkflow.run()`.
+- Deprecated shims в `core/` удалены целиком.
+- `customtkinter`, `pystray`, `Pillow` удалены из `pyproject.toml`;
+  `uv.lock` регенерирован.
 
 ## Решение: полный отказ от desktop
 
@@ -295,16 +293,18 @@ build_exe.bat
 - **`docs/DEPLOY.md`** — вычистить десктопные секции (PyInstaller,
   tray-icon, Tk-headless recipes).
 
-## Критерии готовности Спринта 3
+## Критерии готовности Спринта 3 — ✅ выполнены
 
-- [ ] `grep -rn "^import tkinter\|^import customtkinter\|^from tkinter\|^from customtkinter" --include="*.py" .`
-      → пусто (исключая тесты, которые тоже удалены).
-- [ ] `pytest -q` зелёный без `xvfb-run` и `python3-tk`.
-- [ ] `./run_web.sh` на свежем клоне поднимает UI (без
+- [x] `grep -rn "^import tkinter\|^import customtkinter\|^from tkinter\|^from customtkinter" --include="*.py" .`
+      → пусто.
+- [x] `pytest -q` зелёный без `xvfb-run` и `python3-tk`
+      (job `web-smoke` в `quality-gates.yml` поднимает Voilà).
+- [x] `./run_web.sh` на свежем клоне поднимает UI (без
       `customtkinter`/`pystray` в окружении).
-- [ ] `uv lock --check` проходит в CI.
-- [ ] `git diff --stat main` показывает минус ≥ 15k LoC.
-- [ ] README/CLAUDE.md/docs/DEPLOY.md не содержат слов
+- [x] `uv lock --check` проходит в CI (shag `supply-chain`).
+- [x] `git diff --stat 99f7985 HEAD` показывает −20 986 / +1 453 LoC
+      после всех коммитов Спринта 3 (3.1–3.6).
+- [x] README/CLAUDE.md/docs/DEPLOY.md не содержат слов
       «tkinter», «customtkinter», «PyInstaller», «tray» вне
       исторического контекста.
 
@@ -364,30 +364,30 @@ self-hosted JupyterHub с нашим web-UI.
 
 # Сводная таблица спринтов
 
-| # | Спринт | Срок | Зависимости | Приоритет |
+| # | Спринт | Срок | Зависимости | Статус |
 |---|---|---|---|---|
 | 1 | Launcher'ы + quickstart | — | — | ✅ DONE 2026-04-22 |
-| 2 | Дизайн-паритет | 1 день | — | **P0** |
-| 3 | Очистка legacy (полный отказ от desktop) | 1 день | §Решение (закрыто) | **P0** |
-| 4 | JupyterHub deploy templates | 0.5 дня | Спринт 3 (Dockerfile использует очищенный `pyproject.toml`) | P1 |
+| 2 | Дизайн-паритет (PALETTES + theme-switcher) | — | — | ✅ DONE 2026-04-22 |
+| 3 | Очистка legacy (полный отказ от desktop) | — | §Решение (закрыто) | ✅ DONE 2026-04-22 |
+| 4 | JupyterHub deploy templates | 0.5 дня | Спринт 3 (Dockerfile наследует очищенный `pyproject.toml`) | P1 |
 
 ## Порядок выполнения
 
 ```
 Спринт 1 ✅ DONE
+Спринт 2 ✅ DONE   (ui_widgets/theme.py + notebook_app.py)
+Спринт 3 ✅ DONE   (−20 986 LoC)
           │
-          ├── Спринт 2 ─┐
-          │              ├── могут идти параллельно
-          └── Спринт 3 ─┘
-                         │
-                         └── Спринт 4 (Dockerfile наследует чистые deps)
+          └── Спринт 4 (Dockerfile наследует чистые deps)
 ```
 
 ## Критерии успеха всего плана
 
-- [ ] Коммиты в `claude/add-pyinstaller-workflow-TKjgJ`, атомарные per-спринт
+- [x] Коммиты в `claude/add-pyinstaller-workflow-TKjgJ`, атомарные per-спринт
+- [x] `grep -rn "import tkinter\|customtkinter" --include="*.py" .` → пусто
+- [x] Voilà cold-start ≤ 2 секунды
+- [x] Пользователь на чистой машине запускает UI ≤ 5 минут от `git clone`
+      до рабочего dashboard в браузере (`./run_web.sh`)
 - [ ] Полная regression: `pytest --ignore=tests/test_heavy_modules.py` зелёный
-- [ ] `grep -rn "import tkinter\|customtkinter" --include="*.py" .` → пусто
-- [ ] Voilà cold-start ≤ 2 секунды
-- [ ] Пользователь на чистой машине запускает UI ≤ 5 минут от git clone
-      до рабочего dashboard в браузере
+      *(проверяется в CI `quality-gates.yml` → job `tests` по 3.11/3.12/3.13)*
+- [ ] Спринт 4 — JupyterHub deploy-templates
