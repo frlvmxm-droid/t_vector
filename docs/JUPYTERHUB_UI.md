@@ -245,6 +245,64 @@ shell tools (`~/.classification_tool/` is a regular directory tree).
 
 ---
 
+## Self-hosted via docker-compose
+
+Three reference files ship in the repo root:
+
+- [`Dockerfile.jupyterhub`](../Dockerfile.jupyterhub) — builds the hub
+  image on top of `jupyterhub/jupyterhub:4.1.5` with the project's
+  `uv.lock`, the `[ml]` + `[ui]` extras, and deploy-time packages
+  (`dummyauthenticator`, `psycopg2-binary`, `jupyterlab`, `notebook`).
+- [`jupyterhub_config.py.example`](../jupyterhub_config.py.example) —
+  minimal single-admin `jupyterhub_config.py` with `DummyAuthenticator`,
+  `LocalProcessSpawner`, Voilà default URL, PostgreSQL-aware
+  `db_url`, and a CONFIGPROXY_AUTH_TOKEN guard.
+- [`docker-compose.yml.example`](../docker-compose.yml.example) —
+  two services (`jupyterhub`, `postgres:16-alpine`) with named
+  volumes for hub state, HF cache, persistent user homes, and
+  pg-data.
+
+### Quick start
+
+```bash
+cp docker-compose.yml.example docker-compose.yml
+cp jupyterhub_config.py.example jupyterhub_config.py
+#   edit HUB_DUMMY_PASSWORD inside jupyterhub_config.py
+
+export CONFIGPROXY_AUTH_TOKEN="$(openssl rand -hex 32)"
+export POSTGRES_PASSWORD="$(openssl rand -hex 16)"
+
+docker compose up --build
+#   → http://localhost:8000
+#   login: admin / <HUB_DUMMY_PASSWORD>
+```
+
+First login lands directly on `/voila/render/notebooks/ui.ipynb`;
+the classic Lab UI is still reachable at `/user/<name>/lab`.
+
+### What to change before going to production
+
+| Area | Reference default | Production swap |
+|---|---|---|
+| Authenticator | `DummyAuthenticator` (one shared password) | LDAP / OAuth / PAM / `NativeAuthenticator` |
+| Spawner | `LocalProcessSpawner` (pre-created demo users) | `DockerSpawner` or `KubeSpawner` with a separate single-user image |
+| TLS | Plain HTTP on port 8000 | Reverse proxy (Caddy / Traefik / nginx) terminating HTTPS |
+| Secrets | `POSTGRES_PASSWORD`, `CONFIGPROXY_AUTH_TOKEN` in env | Docker secrets or an external vault; never commit `.env` |
+| Postgres image | `postgres:16-alpine` (floating tag) | Pin to a specific digest (`@sha256:...`), configure backups |
+| SBERT / T5 cache | Shared `/shared/hf-cache` volume (bytes-mutable by all spawners) | Read-only mount filled by a privileged job; users can't poison it |
+| LLM provider | `BRT_LLM_PROVIDER=offline` (deterministic stub, ADR-0004) | Real provider + `LLM_SNAPSHOT_KEY` (Fernet) + API key injected via secret |
+
+### Volumes created by the compose stack
+
+| Volume | Purpose | What to back up |
+|---|---|---|
+| `pg-data` | JupyterHub DB (users, tokens, server state) | yes — losing it invalidates user sessions and admin data |
+| `hub-state` | cookie secret, sqlite fallback if `DATABASE_URL` is unset, admin logs | yes |
+| `hf-cache` | shared HuggingFace cache (SBERT, T5, transformers) | no — re-downloadable; regenerating is slow but deterministic |
+| `user-home` | per-user `~/.classification_tool/` (experiment log, trust store) | yes — losing it wipes trust entries and user history |
+
+---
+
 See also: [`CLAUDE.md`](../CLAUDE.md),
 [`docs/DEPLOY.md`](DEPLOY.md),
 [`docs/BUNDLE_LIFECYCLE.md`](BUNDLE_LIFECYCLE.md).

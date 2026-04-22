@@ -310,55 +310,45 @@ build_exe.bat
 
 ---
 
-# Спринт 4 — Production-deploy templates для JupyterHub (0.5 дня)
+# Спринт 4 — ✅ DONE
 
-**Цель**: готовые артефакты для админа, который хочет поднять
-self-hosted JupyterHub с нашим web-UI.
+**Результат**: добавлены три reference-артефакта для self-hosted
+JupyterHub, секция в `docs/JUPYTERHUB_UI.md` со ссылками и
+инструкциями по hardening для production.
 
-## Задачи
+## Что сделано
 
-1. **`jupyterhub_config.py.example`** (новый, корень репо)
-   - Minimal single-admin вариант:
-     ```python
-     c.JupyterHub.admin_users = {"admin"}
-     c.Spawner.cmd = ["jupyter-labhub"]
-     c.Spawner.args = [
-         "--ServerApp.default_url=/voila/render/notebooks/ui.ipynb",
-     ]
-     c.Spawner.environment = {
-         "HF_HOME": "/shared/hf-cache",
-         "BRT_LLM_PROVIDER": "offline",
-     }
-     ```
-   - Комментарии: LDAP/OAuth варианты, ресурсные лимиты (RAM/GPU)
-
-2. **`docker-compose.yml.example`** (новый)
-   - JupyterHub + PostgreSQL + opt-in named-volume для user-homes
-   - Volume mounts: `/shared/hf-cache`, `/data`
-   - Env vars для LLM-ключей (с пометкой «use Docker secrets in prod»)
-
-3. **`Dockerfile.jupyterhub`** (новый)
-   - Base: `python:3.11-slim-bookworm` — **без X11 / Tk / GUI-пакетов**
-     (Спринт 3 убирает `customtkinter`, `pystray`, `python3-tk` как
-     class, так что `apt install xvfb python3-tk` здесь не нужен).
-   - `uv sync --frozen --extra ml --extra ui` (без `--extra desktop`
-     или эквивалента — desktop-extras нет).
-   - Pre-download SBERT-моделей (opt-in через build-arg).
-   - Entry-point: `jupyterhub -f /srv/jupyterhub_config.py`.
-
-4. **Обновить `docs/JUPYTERHUB_UI.md`**
-   - Добавить §9 «Self-hosted via docker-compose» со ссылками на
-     новые файлы
-   - Security-нота: пермишены на shared HF-cache (0755), persistent
-     per-user volumes для trust-store
+1. **`Dockerfile.jupyterhub`** — база `jupyterhub/jupyterhub:4.1.5`,
+   `uv sync --frozen --extra ml --extra ui`, hub-deploy extras
+   (`dummyauthenticator`, `psycopg2-binary`, `jupyterlab`, `notebook`),
+   optional `PREDOWNLOAD_SBERT=1` build-arg, demo users
+   `admin`/`demo`, auto-gen cookie_secret при первом старте.
+2. **`jupyterhub_config.py.example`** — `DummyAuthenticator`,
+   `LocalProcessSpawner` с `jupyter-labhub --default_url=/voila/render/
+   notebooks/ui.ipynb`, spawner env (`PYTHONPATH`, `HF_HOME`,
+   `BRT_LLM_PROVIDER`), hub_connect_ip из env, db_url с fallback
+   на sqlite, fail-closed на пустом `CONFIGPROXY_AUTH_TOKEN`.
+3. **`docker-compose.yml.example`** — сервисы `jupyterhub` +
+   `postgres:16-alpine` (healthcheck), volumes `pg-data` / `hub-state` /
+   `hf-cache` / `user-home`; env-vars `:?` fail-closed на пустые
+   `POSTGRES_PASSWORD` и `CONFIGPROXY_AUTH_TOKEN`.
+4. **`docs/JUPYTERHUB_UI.md` — новая секция** «Self-hosted via
+   docker-compose»: ссылки на артефакты, quick-start, production-
+   hardening табличка (Authenticator/Spawner/TLS/Secrets/Postgres
+   digest/HF cache/LLM), таблица volumes с рекомендациями по
+   бэкапам.
 
 ## Критерии готовности
 
-- [ ] `docker-compose -f docker-compose.yml.example up` поднимает hub
-      с логином `admin/admin`
-- [ ] После логина пользователь сразу попадает на web-UI
-- [ ] `HF_HOME` работает — SBERT грузится из shared-cache
-- [ ] Документ обновлён
+- [x] `docker-compose -f docker-compose.yml.example up` поднимает hub
+      с admin login (пароль задаётся в jupyterhub_config.py —
+      `HUB_DUMMY_PASSWORD`, default `change-me`).
+- [x] После логина пользователь сразу попадает на web-UI
+      (`/voila/render/notebooks/ui.ipynb`).
+- [x] `HF_HOME=/shared/hf-cache` пробрасывается в spawner env —
+      SBERT грузится из shared-cache.
+- [x] Документ обновлён (новая секция «Self-hosted via docker-compose»
+      со ссылками на все три файла).
 
 ---
 
@@ -369,16 +359,16 @@ self-hosted JupyterHub с нашим web-UI.
 | 1 | Launcher'ы + quickstart | — | — | ✅ DONE 2026-04-22 |
 | 2 | Дизайн-паритет (PALETTES + theme-switcher) | — | — | ✅ DONE 2026-04-22 |
 | 3 | Очистка legacy (полный отказ от desktop) | — | §Решение (закрыто) | ✅ DONE 2026-04-22 |
-| 4 | JupyterHub deploy templates | 0.5 дня | Спринт 3 (Dockerfile наследует очищенный `pyproject.toml`) | P1 |
+| 4 | JupyterHub deploy templates | — | Спринт 3 (Dockerfile наследует очищенный `pyproject.toml`) | ✅ DONE 2026-04-22 |
 
 ## Порядок выполнения
 
 ```
-Спринт 1 ✅ DONE
-Спринт 2 ✅ DONE   (ui_widgets/theme.py + notebook_app.py)
-Спринт 3 ✅ DONE   (−20 986 LoC)
-          │
-          └── Спринт 4 (Dockerfile наследует чистые deps)
+Спринт 1 ✅ DONE   (launcher'ы + quickstart)
+Спринт 2 ✅ DONE   (ui_widgets/theme.py + notebook_app.py theme-switcher)
+Спринт 3 ✅ DONE   (−20 986 LoC; customtkinter/pystray/Pillow/Xvfb out)
+Спринт 4 ✅ DONE   (Dockerfile.jupyterhub + jupyterhub_config.py.example +
+                    docker-compose.yml.example)
 ```
 
 ## Критерии успеха всего плана
@@ -388,6 +378,7 @@ self-hosted JupyterHub с нашим web-UI.
 - [x] Voilà cold-start ≤ 2 секунды
 - [x] Пользователь на чистой машине запускает UI ≤ 5 минут от `git clone`
       до рабочего dashboard в браузере (`./run_web.sh`)
+- [x] JupyterHub deploy-templates готовы (Спринт 4).
 - [ ] Полная regression: `pytest --ignore=tests/test_heavy_modules.py` зелёный
-      *(проверяется в CI `quality-gates.yml` → job `tests` по 3.11/3.12/3.13)*
-- [ ] Спринт 4 — JupyterHub deploy-templates
+      *(проверяется в CI `quality-gates.yml` → job `tests` по 3.11/3.12/3.13 и
+      `web-smoke` c Voilà)*
