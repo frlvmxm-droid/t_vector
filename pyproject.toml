@@ -101,6 +101,13 @@ module = [
     "app_train_service",
     "bank_reason_trainer.cli",
     "bank_reason_trainer.__init__",
+    # Web-UI layer (ADR-0009 / release 10.0.0) — pure Python, Tk-free,
+    # mostly ipywidgets façade. ``notebook_app`` and widget panels are
+    # still permissive (external deps типизированы как Any); the three
+    # below are strict.
+    "ui_widgets.theme",
+    "ui_widgets.session",
+    "ui_widgets.notebook_app",
 ]
 strict = true
 follow_imports = "silent"

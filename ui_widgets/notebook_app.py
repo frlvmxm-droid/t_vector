@@ -261,8 +261,8 @@ def build_app() -> Any:
 
 def _wire_session(
     *,
-    widgets_by_key: dict,
-    snap_fns: tuple,
+    widgets_by_key: dict[str, Any],
+    snap_fns: tuple[Any, ...],
     load_last_session: Any,
     debounced_saver_cls: Any,
 ) -> Any:
@@ -290,8 +290,8 @@ def _wire_session(
             except Exception:  # noqa: BLE001 — TraitError / TypeError / ValueError
                 pass
 
-    def _collect_snap() -> dict:
-        merged: dict = {}
+    def _collect_snap() -> dict[str, Any]:
+        merged: dict[str, Any] = {}
         for fn in snap_fns:
             try:
                 merged.update(fn())

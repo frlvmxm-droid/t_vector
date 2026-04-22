@@ -44,17 +44,20 @@ jobs:
       - name: Mypy (soft, project defaults)
         run: mypy --config-file pyproject.toml . || true
 
-      - name: Mypy (strict on ml_* and workflow_contracts)
+      - name: Mypy (strict on ml_* + workflow_contracts + ui_widgets core)
         run: |
           # follow_imports=silent keeps strict scope to the gated modules;
           # imports into legacy code are type-checked shallowly so cascade
           # errors in ml_vectorizers/ml_diagnostics don't block the gate.
           # Wave 5 target: ≥25 modules. Extend as each becomes clean.
+          # ui_widgets/{theme,session,notebook_app}.py added in 10.0.0
+          # (ADR-0009) once Sprint 2 settled their public API.
           mypy --strict --ignore-missing-imports --follow-imports=silent \
             ml_core.py ml_compat.py workflow_contracts.py artifact_contracts.py \
             ml_distillation.py ml_sbert_bootstrap.py \
             llm_reranker.py cluster_workflow_service.py \
-            app_train_service.py bank_reason_trainer/cli.py
+            app_train_service.py bank_reason_trainer/cli.py \
+            ui_widgets/theme.py ui_widgets/session.py ui_widgets/notebook_app.py
 
       - name: Ruff BLE (blocking on gated-17)
         run: |
