@@ -352,10 +352,27 @@ def _build_css(p: dict[str, str]) -> str:
     color: {FG};
     margin-right: 6px; margin-top: 4px;
   }}
-  .brt-chip.ok    {{ color: {SUCCESS}; border-color: {ACCENT3}; }}
-  .brt-chip.warn  {{ color: {WARNING}; border-color: #7a5a15; }}
-  .brt-chip.err   {{ color: {ERROR};   border-color: #7a1f1f; }}
-  .brt-chip.info  {{ color: {ACCENT2}; border-color: {ACCENT3}; }}
+  .brt-chip.ok      {{ color: {SUCCESS}; border-color: {ACCENT3}; }}
+  .brt-chip.warn    {{ color: {WARNING}; border-color: #7a5a15; }}
+  .brt-chip.err     {{ color: {ERROR};   border-color: #7a1f1f; }}
+  .brt-chip.info    {{ color: {ACCENT2}; border-color: {ACCENT3}; }}
+  .brt-chip.accent  {{ color: {ACCENT};  border-color: {ACCENT2}; font-weight: 600; }}
+
+  .brt-field-label {{
+    display: block;
+    color: {MUTED};
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    margin: 4px 0 2px 0;
+  }}
+
+  .brt-sep {{
+    height: 0;
+    border-top: 1px solid {BORDER2};
+    margin: 10px 0;
+  }}
 
   .brt-metric {{
     flex: 1 1 0;
@@ -458,10 +475,11 @@ def _build_css(p: dict[str, str]) -> str:
     background: {ENTRY_BG};
     color: {FG};
   }}
-  .brt-badge-ok   {{ color: {SUCCESS}; border-color: {ACCENT3}; background: rgba(29,233,182,0.08); }}
-  .brt-badge-warn {{ color: {WARNING}; border-color: #7a5a15; background: rgba(240,180,41,0.08); }}
-  .brt-badge-err  {{ color: {ERROR};   border-color: #7a1f1f; background: rgba(255,82,82,0.08); }}
-  .brt-badge-info {{ color: {ACCENT2}; border-color: {ACCENT3}; background: rgba(29,233,182,0.06); }}
+  .brt-badge-ok     {{ color: {SUCCESS}; border-color: {ACCENT3}; background: rgba(29,233,182,0.08); }}
+  .brt-badge-warn   {{ color: {WARNING}; border-color: #7a5a15; background: rgba(240,180,41,0.08); }}
+  .brt-badge-err    {{ color: {ERROR};   border-color: #7a1f1f; background: rgba(255,82,82,0.08); }}
+  .brt-badge-info   {{ color: {ACCENT2}; border-color: {ACCENT3}; background: rgba(29,233,182,0.06); }}
+  .brt-badge-accent {{ color: {ACCENT};  border-color: {ACCENT2}; background: rgba(0,200,150,0.10); font-weight: 800; }}
 
   .brt-filter-tabs {{
     display: flex; gap: 6px; margin: 6px 0 4px 0;
@@ -508,11 +526,20 @@ def section_header(title: str, subtitle: str = "") -> Any:
     )
 
 
+_CHIP_KINDS: frozenset[str] = frozenset(
+    {"default", "accent", "ok", "warn", "err", "info"}
+)
+
+
 def chip(text: str, kind: str = "default") -> str:
     """Return an HTML snippet for a single chip badge.
 
-    ``kind`` ∈ ``{'default', 'ok', 'warn', 'err', 'info'}``.
+    ``kind`` ∈ ``{'default', 'accent', 'ok', 'warn', 'err', 'info'}``.
+    Unknown kinds degrade silently to ``'default'`` so stale call-sites
+    never crash the UI.
     """
+    if kind not in _CHIP_KINDS:
+        kind = "default"
     cls = "brt-chip" if kind == "default" else f"brt-chip {kind}"
     return f"<span class='{cls}'>{text}</span>"
 
@@ -554,22 +581,61 @@ def card_layout() -> Any:
     )
 
 
-def section_card(title: str, children: Iterable[Any], subtitle: str = "") -> Any:
-    """VBox with an accent section header + body children, styled as a card."""
+def section_card(
+    title: str,
+    children: Iterable[Any],
+    subtitle: str = "",
+    right: Any = None,
+) -> Any:
+    """VBox with an accent section header + body children, styled as a card.
+
+    When ``right`` is a widget (typically a ``Button`` or ``HBox``), it is
+    rendered on the header's right edge via an HBox; title/subtitle stay
+    left-aligned and expand to fill available width.
+    """
     import ipywidgets as w
     head = section_header(title, subtitle)
+    if right is not None:
+        head = w.HBox(
+            [head, right],
+            layout=w.Layout(
+                justify_content="space-between",
+                align_items="center",
+                width="100%",
+            ),
+        )
     return w.VBox([head, *children], layout=card_layout())
+
+
+def field_label(text: str) -> Any:
+    """Uppercase muted label for a form field (CSS class ``brt-field-label``)."""
+    import ipywidgets as w
+    return w.HTML(f"<span class='brt-field-label'>{text}</span>")
+
+
+def separator() -> Any:
+    """Thin horizontal divider (CSS class ``brt-sep``)."""
+    import ipywidgets as w
+    return w.HTML("<div class='brt-sep'></div>")
 
 
 def status_badge(text: str = "idle") -> str:
     return f"<span class='brt-status'>{text}</span>"
 
 
+_BADGE_KINDS: frozenset[str] = frozenset(
+    {"default", "accent", "ok", "warn", "err", "info"}
+)
+
+
 def badge(text: str, kind: str = "ok") -> str:
     """HTML snippet for a small pill badge.
 
-    ``kind`` ∈ ``{'ok', 'warn', 'err', 'info', 'default'}``.
+    ``kind`` ∈ ``{'default', 'accent', 'ok', 'warn', 'err', 'info'}``.
+    Unknown kinds degrade silently to ``'default'``.
     """
+    if kind not in _BADGE_KINDS:
+        kind = "default"
     cls = "brt-badge" if kind == "default" else f"brt-badge brt-badge-{kind}"
     return f"<span class='{cls}'>{text}</span>"
 
