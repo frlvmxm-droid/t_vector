@@ -30,7 +30,7 @@ it unlocks.
 - [ ] `ruff check <strict-module-list>` (see CONTRIBUTING.md)
 - [ ] `mypy --strict --ignore-missing-imports --follow-imports=silent ml_core.py ml_compat.py workflow_contracts.py artifact_contracts.py`
 - [ ] `bandit -r . --exclude ./tests,./ci,./fixtures -ll -q`
-- [ ] Ran the app via `python bootstrap_run.py` and exercised the affected tab.
+- [ ] Ran the web UI via `./run_web.sh` (or `run_web.bat`) and exercised the affected panel.
 
 ## Security Considerations
 

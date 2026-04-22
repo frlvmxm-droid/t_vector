@@ -183,12 +183,12 @@ jobs:
           PYTHONPATH: .
           BRT_LLM_PROVIDER: offline   # ADR-0004: deterministic LLM in CI
         run: |
-          # Ratchet: 45 → 50 → 65 → 72 (Wave 6.5 Block 4). UI/view layers,
-          # deprecated re-export шимы и тяжёлые HF-зависимые модули
-          # (t5_summarizer, ml_mlm_pretrain, app_deps) вынесены в
-          # `.coveragerc` omit; текущее достижимое покрытие на тестируемом
-          # ядре ≈74 % после Wave 3a slice-port (app_cluster_pipeline
-          # stages 2–5 tested end-to-end).
+          # Ratchet: 45 → 50 → 65 → 72 (Wave 6.5 Block 4). Тяжёлые
+          # HF-зависимые модули (t5_summarizer, ml_mlm_pretrain) вынесены
+          # в `.coveragerc` omit; текущее достижимое покрытие на
+          # тестируемом ядре ≈74 % после Wave 3a slice-port
+          # (app_cluster_pipeline stages 2–5 tested end-to-end).
+          # Desktop UI layer удалён в Sprint 3 (WEB_MIGRATION_PLAN.md).
           pytest --cov=. --cov-config=.coveragerc \
             --cov-report=xml --cov-report=term \
             --cov-branch --cov-fail-under=73 \
@@ -203,12 +203,12 @@ jobs:
           path: coverage.xml
           if-no-files-found: warn
 
-  ui-smoke:
-    name: UI smoke (Xvfb + customtkinter)
+  web-smoke:
+    name: Web UI smoke (Voilà)
     runs-on: ubuntu-latest
-    # Изолирован от основного matrix-а: Tk-стек тяжёлый, customtkinter
-    # подтягивает Pillow и shared libs. Гейт «доказывает что мixin-ы
-    # переживают runtime-init», а не функциональное покрытие.
+    # Заменил Xvfb/CustomTkinter UI smoke после полного отказа от
+    # desktop (docs/WEB_MIGRATION_PLAN.md §3). Поднимает voila subprocess
+    # на случайном порту и проверяет HTTP-render notebooks/ui.ipynb.
     steps:
       - uses: actions/checkout@v4
 
@@ -217,29 +217,21 @@ jobs:
           python-version: "3.11"
           cache: pip
 
-      - name: Install Xvfb + Tk
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y xvfb python3-tk
-
-      - name: Install UI deps
+      - name: Install web-UI deps
         run: |
           python -m pip install --upgrade pip
           pip install \
             "scikit-learn>=1.4" "numpy>=1.24" "scipy>=1.11" \
             "joblib>=1.3" "openpyxl>=3.1" "pandas>=2.1" \
             "cryptography>=42.0" "psutil>=5.9" \
-            customtkinter pytest
+            "ipywidgets>=8.0" "voila>=0.5" requests pytest
 
-      - name: Run UI smoke under Xvfb
+      - name: Run Voilà smoke
         env:
           PYTHONPATH: .
           BRT_LLM_PROVIDER: offline
-        # test_ui_smoke.py  — `App()` boots with all 4 mixins.
-        # test_ui_cluster_e2e.py — run_cluster() end-to-end on a 10-row CSV
-        #   (safety net for the Wave 7 stage-2/3 extraction; ADR-0007).
+          RUN_VOILA_SMOKE: "1"
+        # test_voila_smoke.py — launches voila in a subprocess, polls the
+        # HTTP endpoint, checks 200 + expected UI substring.
         run: |
-          xvfb-run -a pytest \
-            tests/test_ui_smoke.py \
-            tests/test_ui_cluster_e2e.py \
-            -v
+          pytest tests/test_voila_smoke.py -v
