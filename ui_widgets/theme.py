@@ -317,7 +317,24 @@ def _build_css(p: dict[str, str]) -> str:
   .brt-header-title {{
     font-size: 13px; color: {FG}; font-weight: 600;
   }}
+  .brt-header-title .brand {{ color: {ACCENT2}; font-weight: 800; }}
   .brt-header-title .muted {{ color: {MUTED}; font-weight: 400; }}
+  .brt-header-title .sub   {{ color: {MUTED}; }}
+
+  .brt-theme-switcher {{
+    display: flex;
+    gap: 4px;
+    margin: 10px 0 0 0;
+    padding: 6px 4px 0 4px;
+    border-top: 1px solid {BORDER2};
+  }}
+  .brt-theme-switcher .jupyter-button {{
+    flex: 1 1 0;
+    padding: 4px 0 !important;
+    font-size: 10px !important;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+  }}
   .brt-status {{
     display: inline-flex; align-items: center; gap: 6px;
     font-size: 11px; color: {MUTED}; text-transform: lowercase;

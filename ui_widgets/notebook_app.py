@@ -1,7 +1,15 @@
-"""Top-level entry point for the Voilà dashboard: dark-teal sidebar app."""
+"""Top-level entry point for the Voilà dashboard: sidebar app + themes."""
 from __future__ import annotations
 
 from typing import Any
+
+
+# Sidebar theme-switcher labels → palette names in ui_widgets.theme.PALETTES.
+_THEME_CHOICES: tuple[tuple[str, str], ...] = (
+    ("Teal",  "dark-teal"),
+    ("Paper", "paper"),
+    ("CRT",   "amber-crt"),
+)
 
 
 def build_app() -> Any:
@@ -9,12 +17,15 @@ def build_app() -> Any:
 
     Returns an ``ipywidgets.VBox`` that can be ``display()``-ed from a
     notebook cell. Layout: left sidebar with workflow/context nav +
-    hardware card; main area shows one of three panels
+    hardware card + theme-switcher; main area shows one of three panels
     (**Обучение / Классификация / Кластеризация**) backed by the headless
-    service layer. Dark-teal palette mirrors ``ui_theme.py``.
+    service layer. Three palettes — dark-teal (default), paper,
+    amber-crt — are switchable at runtime; the choice is persisted in
+    ``~/.classification_tool/last_session.json`` under key ``ui.theme``.
     """
     import ipywidgets as w
 
+    from ui_widgets import theme as _theme
     from ui_widgets.apply_panel import build_apply_panel
     from ui_widgets.cluster_panel import build_cluster_panel
     from ui_widgets.dialogs import (
@@ -24,12 +35,22 @@ def build_app() -> Any:
     )
     from ui_widgets.session import DebouncedSaver, load_last_session
     from ui_widgets.theme import (
-        ACCENT2,
-        MUTED,
+        apply_theme,
+        get_active_theme,
         inject_css,
+        rebuild_css,
         status_badge,
     )
     from ui_widgets.train_panel import build_train_panel
+
+    # ── Restore persisted theme BEFORE building the CSS widget ──────────
+    try:
+        _saved = load_last_session() or {}
+    except Exception:  # noqa: BLE001 — session corruption is non-fatal
+        _saved = {}
+    _saved_theme = _saved.get("ui.theme") if isinstance(_saved, dict) else None
+    if isinstance(_saved_theme, str) and _saved_theme in _theme.PALETTES:
+        apply_theme(_saved_theme)
 
     # ── Main stack (one panel visible at a time) ────────────────────────
     train_p, train_widgets, train_snap = build_train_panel()
@@ -37,9 +58,16 @@ def build_app() -> Any:
     cluster_p, cluster_widgets, cluster_snap = build_cluster_panel()
 
     # ── Session save/restore ────────────────────────────────────────────
-    _wire_session(
+    # Extra snap fn injects the active theme so `ui.theme` is written on
+    # every debounced save.
+    saver = _wire_session(
         widgets_by_key={**train_widgets, **apply_widgets, **cluster_widgets},
-        snap_fns=(train_snap, apply_snap, cluster_snap),
+        snap_fns=(
+            train_snap,
+            apply_snap,
+            cluster_snap,
+            lambda: {"ui.theme": get_active_theme()},
+        ),
         load_last_session=load_last_session,
         debounced_saver_cls=DebouncedSaver,
     )
@@ -75,8 +103,8 @@ def build_app() -> Any:
         ("🧩", "Кластеризация", ""),
     ]
     nav_buttons: list[Any] = []
-    for icon, label, badge in nav_items:
-        desc = f"{icon}  {label}" + (f"   ({badge})" if badge else "")
+    for icon, label, badge_text in nav_items:
+        desc = f"{icon}  {label}" + (f"   ({badge_text})" if badge_text else "")
         btn = w.Button(
             description=desc,
             layout=w.Layout(width="96%", margin="2px 0",
@@ -96,9 +124,9 @@ def build_app() -> Any:
         title, sub = panel_titles[index]
         header_title_html.value = (
             "<div class='brt-header-title'>"
-            f"<span style='color:{ACCENT2};font-weight:800'>BankReasonTrainer</span>"
+            "<span class='brand'>BankReasonTrainer</span>"
             f"<span class='muted'> — {title}</span>"
-            f"<span style='color:{MUTED}'>  ·  {sub}</span>"
+            f"<span class='sub'>  ·  {sub}</span>"
             "</div>"
         )
 
@@ -150,12 +178,47 @@ def build_app() -> Any:
     hw_card = w.HTML(_hardware_card_html())
     footer_html = w.HTML("<div class='brt-footer'>v3.4.1 · build 1248</div>")
 
+    # ── CSS widget (honours restored _ACTIVE_THEME) ─────────────────────
+    css_widget = inject_css()
+
+    # ── Theme-switcher in sidebar ───────────────────────────────────────
+    theme_buttons: list[Any] = []
+    for label, _palette in _THEME_CHOICES:
+        btn = w.Button(
+            description=label,
+            layout=w.Layout(width="auto", margin="0"),
+        )
+        theme_buttons.append(btn)
+
+    def _refresh_theme_buttons() -> None:
+        active = get_active_theme()
+        for btn, (_label, palette) in zip(theme_buttons, _THEME_CHOICES):
+            btn.button_style = "primary" if palette == active else ""
+
+    def _set_theme(palette: str) -> None:
+        try:
+            apply_theme(palette)
+        except ValueError:
+            return
+        css_widget.value = rebuild_css()
+        _refresh_theme_buttons()
+        saver.schedule()
+
+    for btn, (_label, palette) in zip(theme_buttons, _THEME_CHOICES):
+        btn.on_click(lambda _b, _p=palette: _set_theme(_p))
+
+    _refresh_theme_buttons()
+
+    theme_switcher = w.HBox(theme_buttons)
+    theme_switcher.add_class("brt-theme-switcher")
+
     sidebar = w.VBox(
         [
             brand_html,
             workflow_title, *nav_buttons,
             context_title, *context_buttons,
             hw_card,
+            theme_switcher,
             footer_html,
         ],
         layout=w.Layout(
@@ -193,7 +256,7 @@ def build_app() -> Any:
     )
     root.add_class("brt-app")
 
-    return w.VBox([inject_css(), root])
+    return w.VBox([css_widget, root])
 
 
 def _wire_session(
@@ -202,9 +265,12 @@ def _wire_session(
     snap_fns: tuple,
     load_last_session: Any,
     debounced_saver_cls: Any,
-) -> None:
+) -> Any:
     """Restore the last saved snap into ``widgets_by_key`` and wire a
     ``DebouncedSaver`` that coalesces rapid widget changes into one write.
+
+    Returns the saver so the caller (e.g. theme-switcher) can trigger
+    ``saver.schedule()`` on non-widget events.
 
     Failures are swallowed silently — session state is nice-to-have, not
     load-bearing.  One bad key (e.g. a legacy snap-key whose widget lost
@@ -243,6 +309,8 @@ def _wire_session(
             widget.observe(_on_change, names="value")
         except Exception:  # noqa: BLE001 — widget without `value` trait
             continue
+
+    return saver
 
 
 def _hardware_card_html() -> str:
