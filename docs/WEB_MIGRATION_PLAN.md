@@ -99,43 +99,80 @@ Tk и покрыт тестами. Web-UI (`ui_widgets/*`) построен по
 design-компоненты, чтобы web-UI визуально совпадал с эталоном из
 `ctk_migration_pack/BankReasonTrainer.html`.
 
+**Важно**: `section_card`, `section_header`, `chip`, `chips_row`,
+`badge`, `metric_card`, `metric_row`, `inject_css`, `header_chip_row`,
+`overlay_card`, `card_layout`, `status_badge` уже существуют в
+`ui_widgets/theme.py` и используются во всех панелях. Задачи ниже —
+это **расширение существующих функций**, а не создание с нуля.
+
 ## Задачи
 
 1. **Палитры в `ui_widgets/theme.py`**
-   - Module-level `PALETTES: dict[str, dict[str, str]]`:
-     - `"dark-teal"` (текущая, оставить как default)
-     - `"paper"` — светлая, из `ctk_migration_pack/ui_theme_ctk.py`
-     - `"amber-crt"` — ретро, из того же файла
-   - `apply_theme(name: str) -> None` — переключает module-level
-     `COLORS` + регенерирует CSS через `inject_css()`
+   - Сейчас на ст. 13–28 лежат плоские module-level константы
+     (`BG`, `PANEL`, `FG`, `ACCENT`, и т.д.) — они зашивают
+     единственную тему Dark Teal в CSS на ст. 31–354.
+   - Ввести над ними `PALETTES: dict[str, dict[str, str]]`:
+     - `"dark-teal"` — текущие значения, default.
+     - `"paper"` — светлая, взять из
+       `ctk_migration_pack/ui_theme_ctk.py` (пакет удаляется в
+       Спринте 3, палитры копируются сюда).
+     - `"amber-crt"` — ретро, из того же файла.
+   - Плоские константы заменить на динамическое чтение из
+     `PALETTES[_ACTIVE]`; `_CSS` сделать функцией (не f-string на
+     module-level), чтобы он регенерировался при смене темы.
 
-2. **Theme-switcher в sidebar** (`ui_widgets/notebook_app.py`)
-   - Под hardware-card — трёх-кнопочная группа `[Teal · Paper · CRT]`
-   - `on_click` → `apply_theme(name)` + `inject_css()` re-run
-   - Персистить выбор в `~/.classification_tool/last_session.json`
-     (ключ `ui.theme`)
+2. **`apply_theme(name: str) -> None`** (новая функция в `theme.py`)
+   - Перезаписывает module-level активную палитру.
+   - Возвращает свежий `ipywidgets.HTML` через `inject_css()` для
+     ре-инъекции (вызывающий код заменяет старый CSS-widget).
 
-3. **Расширение `section_card`** (`ui_widgets/theme.py`)
-   - Сигнатура: `section_card(title, children, subtitle="", right=None)`
-   - Если `right` — widget/HBox, вставляется в header справа от title
+3. **Theme-switcher в sidebar** (`ui_widgets/notebook_app.py`)
+   - Под hw-card — трёх-кнопочная группа `[Teal · Paper · CRT]`
+     (Toggle/RadioButtons).
+   - `on_click` → `apply_theme(name)` + замена CSS-widget'а в
+     sidebar DOM.
+   - Persist: через существующий `ui_widgets/session.py:save_session()`
+     (atomic-write + `DebouncedSaver` уже готовы), новый ключ
+     `ui.theme`. **Не создавать** свой persistence-слой.
+   - На старте `build_app()` читать `load_last_session().get("ui", {}).get("theme")`
+     и вызывать `apply_theme()` до первого `inject_css()`.
 
-4. **Helper'ы для полей**
-   - `field_label(text)` → HTML-widget с `.brt-field-label` class
-     (uppercase, muted, small font)
-   - `separator()` → HTML-widget с `<div style='border-bottom: …'>` блоком
+4. **Расширение `section_card`** (`ui_widgets/theme.py:422`)
+   - Текущая сигнатура: `section_card(title, children, subtitle="")`.
+   - Новая: `section_card(title, children, subtitle="", right=None)`.
+   - Если `right` — widget или `HBox`, вставляется в header справа
+     от title (через внутренний `HBox([section_header(...), right])`).
 
-5. **Расширить badge / chip kinds**
-   - Добавить `accent` kind (yellow/amber) в `chip()` и `badge()`
-   - Убедиться, что все 5 kind'ов покрыты: `default | accent | success | warning | error`
+5. **Helper'ы для полей** (новые в `theme.py`)
+   - `field_label(text: str) -> ipywidgets.HTML` — CSS-класс
+     `.brt-field-label` (uppercase, muted, 11px, letter-spacing 1px).
+   - `separator() -> ipywidgets.HTML` — тонкий `<div>` с
+     `.brt-sep` (1px border-bottom, color `BORDER2`, margin 8px 0).
+   - Оба CSS-класса добавить в `_CSS` в `theme.py`.
+
+6. **Расширить `chip()` / `badge()` — kind `accent`**
+   - Сейчас `chip()` (`theme.py:376`) принимает
+     `{default, ok, warn, err, info}`, `badge()` (`theme.py:433`) —
+     `{ok, warn, err, info, default}`.
+   - Добавить kind `accent` (amber/yellow) в обе функции.
+   - В `_CSS` добавить правила `.brt-chip.accent` (рядом с
+     ст. 222–225) и `.brt-badge-accent` (рядом с ст. 328–331).
+   - Канонический список после правок:
+     `{default, accent, ok, warn, err, info}` — задокументировать в
+     docstring обеих функций.
 
 ## Критерии готовности
 
-- [ ] Переключение темы в sidebar работает без перезагрузки страницы
-- [ ] Выбор темы сохраняется между сессиями
-- [ ] Скриншот текущего UI (Dark Teal) визуально совпадает с
-      `ctk_migration_pack/BankReasonTrainer.html` на 95%
-- [ ] `section_card(..., right=Button)` корректно рендерит кнопку в header
-- [ ] Все 5 kind'ов `chip()` отображаются в test-notebook
+- [ ] `apply_theme("paper")` в ноутбуке мгновенно меняет тему без
+      перезагрузки Voilà-страницы.
+- [ ] Выбор темы сохраняется в `~/.classification_tool/last_session.json`
+      (ключ `ui.theme`) и применяется при следующем `build_app()`.
+- [ ] Скриншот текущего UI в Dark Teal визуально совпадает с
+      `ctk_migration_pack/BankReasonTrainer.html` на 95%.
+- [ ] `section_card(..., right=Button("…"))` корректно рендерит
+      кнопку в header справа от title.
+- [ ] Все 6 kind'ов `chip()` и `badge()` отображаются в
+      test-notebook (`notebooks/ui_smoketest.ipynb` или аналоге).
 
 ---
 
