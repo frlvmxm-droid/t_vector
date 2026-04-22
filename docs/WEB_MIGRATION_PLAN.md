@@ -78,51 +78,18 @@ Tk и покрыт тестами. Web-UI (`ui_widgets/*`) построен по
 
 ---
 
-# Спринт 1 — Запуск «из коробки» (1 день)
+# Спринт 1 — ✅ DONE
 
-**Цель**: пользователь на Windows или Linux делает `git clone` +
-двойной клик по launcher'у — и получает работающий web-UI на
-`http://localhost:8866/`.
+Задачи выполнены, раздел свернут. Артефакты:
+- `run_web.bat`, `run_web.sh` (корень репо) — детект Python, dep-check,
+  автооткрытие браузера, env-override `BRT_PORT` / `BRT_HOST`.
+- `docs/QUICKSTART_WEB_UI.md` — локальный запуск Windows/Linux/macOS
+  + troubleshooting.
+- `README.md` §8.3 переведён на launcher'ы.
 
-## Задачи
-
-1. **`run_web.bat`** (новый файл, корень проекта)
-   - Детект Python: `py -3` → `python` → фатальная ошибка с ссылкой на python.org
-   - Проверка `voila` + `ipywidgets` через `python -c "import …"` — если нет, `pip install -e ".[ui]"`
-   - Свободный порт: 8866 по умолчанию, fallback через env `BRT_PORT`
-   - Автооткрытие браузера: `start "" http://localhost:%PORT%/`
-   - Exec: `python -m voila notebooks\ui.ipynb --port=%PORT% --no-browser`
-
-2. **`run_web.sh`** (новый файл, корень проекта, chmod +x)
-   - Bash, `set -euo pipefail`
-   - Детект: `$PYTHON` → `python3.11` → `python3` → фатальная ошибка
-   - Проверка deps, `pip install -e ".[ui]"` при необходимости
-   - Автооткрытие: `xdg-open` / `open` (macOS) / ничего (в SSH-сессии)
-   - `exec python -m voila notebooks/ui.ipynb --port=$PORT --no-browser`
-   - Поддержка env: `BRT_PORT`, `BRT_HOST` (default `127.0.0.1`)
-
-3. **`docs/QUICKSTART_WEB_UI.md`** (новый)
-   - §1 Требования (Python 3.11+, свободный порт 8866)
-   - §2 Windows: `run_web.bat`
-   - §3 Linux / macOS: `./run_web.sh`
-   - §4 Альтернатива — ручной запуск через `uv`
-   - §5 Troubleshooting (port в использовании, firewall, ImportError)
-   - §6 Остановка: Ctrl+C в терминале
-   - §7 Что дальше — ссылки на `JUPYTERHUB_UI.md` для продакшна
-
-4. **Обновить `README.md`** §8.3
-   - Заменить ручной «uv sync + voila» recipe на:
-     - Windows: `run_web.bat`
-     - Linux: `./run_web.sh`
-   - Ссылка на `docs/QUICKSTART_WEB_UI.md`
-
-## Критерии готовности
-
-- [ ] `./run_web.sh` на чистом Linux (Ubuntu 22.04) поднимает UI < 2 минут
-- [ ] `run_web.bat` на Windows 10/11 поднимает UI (Python из Microsoft Store **не** принимается)
-- [ ] Документ `QUICKSTART_WEB_UI.md` покрывает оба ОС
-- [ ] README §8.3 ссылается на новые launcher'ы
-- [ ] Оба скрипта корректно обрабатывают: нет Python / нет pip / занят порт / Ctrl+C
+Подробный чек-лист был в версии документа до 2026-04-22 (см.
+`git log -- docs/WEB_MIGRATION_PLAN.md`). В сводной таблице внизу —
+одна строка со статусом.
 
 ---
 
