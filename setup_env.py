@@ -426,8 +426,9 @@ def print_summary():
     print()
     _sep()
     print()
-    print("  Для запуска приложения:")
-    print("    python bootstrap_run.py")
+    print("  Для запуска web-UI:")
+    print("    ./run_web.sh        (Linux / macOS)")
+    print("    run_web.bat         (Windows)")
     print()
     _sep()
 
@@ -478,7 +479,7 @@ def main():
         _err("Есть нерешённые проблемы. Исправьте их перед запуском.")
         sys.exit(1)
 
-    _ok("Окружение готово. Можно запускать: python bootstrap_run.py")
+    _ok("Окружение готово. Web-UI: ./run_web.sh  (или run_web.bat на Windows)")
     print()
 
 

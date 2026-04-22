@@ -489,39 +489,6 @@ class TestT5RussianSummarizerHelpers:
         cb.assert_called_once_with(0.5, "halfway")
 
 
-# ===========================================================================
-# MODULE 3: bank_reason_trainer_gui.py (legacy entry point)
-# ===========================================================================
-
-
-class TestBankReasonTrainerGui:
-    """Legacy entry point can be imported safely; contains guard block."""
-
-    def test_module_imports_without_error(self):
-        """Importing the module at top level must not raise anything."""
-        sys.modules.pop("bank_reason_trainer_gui", None)
-        mod = importlib.import_module("bank_reason_trainer_gui")
-        assert mod is not None
-
-    def test_module_has_docstring_with_deprecated_reference(self):
-        import bank_reason_trainer_gui as mod
-        doc = mod.__doc__ or ""
-        assert "deprecated" in doc.lower()
-
-    def test_module_source_contains_main_guard(self):
-        """The __main__ guard must be present in source."""
-        src_path = PROJECT_ROOT / "bank_reason_trainer_gui.py"
-        source = src_path.read_text(encoding="utf-8")
-        assert 'if __name__ == "__main__"' in source
-
-    def test_module_source_contains_deprecation_warning(self):
-        src_path = PROJECT_ROOT / "bank_reason_trainer_gui.py"
-        source = src_path.read_text(encoding="utf-8")
-        assert "DeprecationWarning" in source
-        assert "warnings.warn" in source
-
-    def test_module_source_mentions_bootstrap_run(self):
-        """Deprecation message should point users to bootstrap_run.py."""
-        src_path = PROJECT_ROOT / "bank_reason_trainer_gui.py"
-        source = src_path.read_text(encoding="utf-8")
-        assert "bootstrap_run" in source
+# MODULE 3 (bank_reason_trainer_gui.py — legacy entry point) was removed
+# in Sprint 3.1 of the web migration (ADR-0009). Its tests lived here
+# and have been deleted along with the file.

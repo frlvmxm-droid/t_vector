@@ -2,8 +2,8 @@
 REM ===================================================================
 REM  BankReasonTrainer -- launch Voila web-UI on localhost (Windows).
 REM
-REM  Works on Windows 10/11. Unlike run_app.bat this does NOT require
-REM  Tkinter -- web-UI runs in the browser over ipywidgets + Voila.
+REM  Works on Windows 10/11. Web-UI runs in the browser over
+REM  ipywidgets + Voila; no Tkinter / CTk required.
 REM
 REM  Environment overrides (optional):
 REM    BRT_PORT     -- port to bind Voila (default: 8866)

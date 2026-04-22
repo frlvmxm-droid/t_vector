@@ -82,7 +82,8 @@ class ClusteringWorkflow:
         files_snapshot:
             List of absolute file paths to cluster.
         snap:
-            Parameter snapshot dict (same format as app.py _snap_params()).
+            Parameter snapshot dict (same shape the web UI serialises via
+            ``ui_widgets/session.py:save_session()``).
         log_cb:
             Optional callback receiving log strings (e.g. print).
         progress_cb:

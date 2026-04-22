@@ -1381,7 +1381,8 @@ class Lemmatizer(BaseEstimator, TransformerMixin):
 
     def fit(self, X, y=None):
         # Форсируем инициализацию при fit, чтобы is_active_ был известен
-        # до начала трансформации и мог быть проверен снаружи (app.py).
+        # до начала трансформации и мог быть проверен снаружи вызывающим
+        # кодом (UI или CLI).
         self._get_morph()
         self.is_active_: bool = bool(self._available)
         self.backend_: str = self._backend   # "pymorphy3" | "pymorphy2" | ""
