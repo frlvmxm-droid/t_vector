@@ -1,0 +1,90 @@
+# docker-compose.yml.example — reference self-hosted JupyterHub for the
+# BankReasonTrainer Voilà dashboard.  Works with Dockerfile.jupyterhub
+# and jupyterhub_config.py.example.
+#
+# Quick start:
+#   1. cp docker-compose.yml.example docker-compose.yml
+#   2. cp jupyterhub_config.py.example jupyterhub_config.py
+#      # edit HUB_DUMMY_PASSWORD and allowed users inside
+#   3. export CONFIGPROXY_AUTH_TOKEN="$(openssl rand -hex 32)"
+#      export POSTGRES_PASSWORD="$(openssl rand -hex 16)"
+#   4. docker compose up --build
+#   5. Open http://localhost:8000
+#      Login: admin / <HUB_DUMMY_PASSWORD from jupyterhub_config.py>
+#
+# NOT production-ready — use as a reference.  Before going online:
+#   * Replace DummyAuthenticator with LDAP / OAuth / PAM / NativeAuth.
+#   * Put the hub behind a TLS-terminating reverse proxy (Caddy,
+#     Traefik, nginx) — this stack listens plain HTTP on :8000.
+#   * Move secrets (POSTGRES_PASSWORD, CONFIGPROXY_AUTH_TOKEN,
+#     LLM_SNAPSHOT_KEY, provider API keys) into Docker secrets or an
+#     external secret manager; do NOT commit .env with these values.
+#   * Swap LocalProcessSpawner for DockerSpawner / KubeSpawner so user
+#     kernels run in isolated containers instead of the hub image.
+#   * Pin `postgres:16-alpine` to a specific digest (`@sha256:...`);
+#     back up the pg-data volume.
+#   * Add rate limiting and CSP headers at the proxy.
+version: "3.9"
+
+services:
+  jupyterhub:
+    build:
+      context: .
+      dockerfile: Dockerfile.jupyterhub
+      args:
+        # Bake SBERT weights into the image (adds ~500 MB); flip to "1"
+        # when the hub host has limited outbound bandwidth.
+        PREDOWNLOAD_SBERT: "0"
+    image: bank-reason-trainer-hub:demo
+    container_name: brt-hub
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    environment:
+      # DB — psycopg2-binary is installed in Dockerfile.jupyterhub.
+      DATABASE_URL: "postgresql+psycopg2://brt:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in env}@postgres:5432/jupyterhub"
+      CONFIGPROXY_AUTH_TOKEN: "${CONFIGPROXY_AUTH_TOKEN:?set CONFIGPROXY_AUTH_TOKEN in env (32+ hex chars)}"
+      HUB_CONNECT_IP: "jupyterhub"
+      # Application-level knobs.  BRT_LLM_PROVIDER=offline is a
+      # deterministic stub (ADR-0004) — swap for anthropic/openai/ollama
+      # in production and plumb the provider key via Docker secrets.
+      HF_HOME: "/shared/hf-cache"
+      BRT_LLM_PROVIDER: "offline"
+    volumes:
+      # Config: read-only bind mount so edits take effect with
+      # `docker compose restart jupyterhub`.
+      - ./jupyterhub_config.py:/srv/jupyterhub/jupyterhub_config.py:ro
+      # Hub state (cookie secret, sqlite fallback if DATABASE_URL
+      # is unset, experiment log for admin).
+      - hub-state:/srv/jupyterhub/state
+      # Shared HuggingFace cache — prevents each user from downloading
+      # multi-GB SBERT / transformers weights.
+      - hf-cache:/shared/hf-cache
+      # Persistent user homes — keeps `~/.classification_tool/`
+      # (experiment log, trust store) alive across restarts.
+      - user-home:/home
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: brt-hub-db
+    environment:
+      POSTGRES_USER: brt
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in env}"
+      POSTGRES_DB: jupyterhub
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U brt -d jupyterhub"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  pg-data:
+  hub-state:
+  hf-cache:
+  user-home:
