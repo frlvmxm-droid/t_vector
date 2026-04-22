@@ -8,36 +8,14 @@ omit =
     dist/*
     setup.py
     setup_env.py
-    bootstrap_run.py
-    bootstrap_ctk.py
     download_sbert_models.py
     ctk_migration_pack/*
-    # UI/view layers — deliberately exercised only through integration tests
-    app_*_view_ctk.py
-    ui_widgets_tk.py
-    ui_theme.py
-    ui_theme_ctk.py
-    app_dialogs_ctk.py
-    experiment_history_dialog.py
-    # UI mixins — purely Tk-bound; covered by tests/test_ui_smoke.py
-    # under Xvfb. Testable orchestration logic lives in *_service.py.
-    app.py
-    app_train.py
-    app_apply.py
-    app_cluster.py
-    app_apply_view.py
-    app_train_view.py
-    app_deps.py
-    cluster_ui_builder.py
     # Optional heavy-stack modules that require torch + transformers
     # (and a downloaded HF checkpoint) to exercise meaningfully. Covered
-    # by nightly UI smoke / integration runs, not unit tests.
+    # by nightly integration runs, not unit tests.
     t5_summarizer.py
     ml_mlm_pretrain.py
     # Deprecated re-export shims (warn on import, code lives elsewhere)
-    core/feature_builder.py
-    core/hw_profile.py
-    core/text_utils.py
     utils/__init__.py
     utils/excel_utils.py
     utils/t5_summarizer.py
