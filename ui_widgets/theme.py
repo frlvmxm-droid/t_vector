@@ -1,36 +1,169 @@
 # -*- coding: utf-8 -*-
-"""Dark-Teal theme for the Voilà dashboard.
+"""Theme layer for the Voilà dashboard.
 
-Palette and card aesthetics mirror ``ui_theme.py`` (CTk / Tkinter path)
-so the web UI reads as the same product. Everything is pure CSS + HTML
-strings — we don't introduce custom JS or Voilà templates.
+The UI ships three palettes — ``dark-teal`` (default), ``paper`` (light)
+and ``amber-crt`` (retro) — mirroring the ``ctk_migration_pack/
+BankReasonTrainer.html`` prototype. Everything is pure CSS + HTML
+strings; we don't introduce custom JS or Voilà templates.
+
+Public API:
+
+- ``PALETTES``              — dict of palette-name → colour dict
+- ``apply_theme(name)``     — switch the active palette (no redraw)
+- ``rebuild_css() -> str``  — regenerate CSS for the active palette
+- ``inject_css()``          — return an ``ipywidgets.HTML`` carrying
+                              the active CSS; call once at build time
+- ``get_active_theme()``    — current palette name (for persistence)
+
+The module-level constants ``BG``, ``PANEL``, ``FG``, ``ACCENT`` etc.
+are **default-only aliases** from ``PALETTES["dark-teal"]``. They are
+kept for backwards compatibility with the pre-Sprint-2 call-sites that
+inline-style HTML snippets. Fresh code should prefer CSS classes so
+theme-switching works without a page reload.
 """
 from __future__ import annotations
 
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable
 
 
-# ── palette (mirrors ui_theme.py) ───────────────────────────────────────
-BG       = "#050f0c"
-PANEL    = "#0b1c16"
-PANEL2   = "#102418"
-FG       = "#e4f4ee"
-MUTED    = "#6db39a"
-MUTED2   = "#3e7a62"
-ENTRY_BG = "#040d0a"
-BORDER   = "#1c4a35"
-BORDER2  = "#112d20"
-ACCENT   = "#00c896"
-ACCENT2  = "#1de9b6"
-ACCENT3  = "#009b75"
-SUCCESS  = "#1de9b6"
-WARNING  = "#f0b429"
-ERROR    = "#ff5252"
+# ── Palettes (source: ctk_migration_pack/ui_theme_ctk.py) ─────────────
+# 17 keys per palette. `muted2` and `entry_bg` are aliases added on top
+# of the CTk palette to match the existing CSS variable names.
+PALETTES: dict[str, dict[str, str]] = {
+    "dark-teal": {
+        "bg":       "#050f0c",
+        "panel":    "#0b1c16",
+        "panel2":   "#102418",
+        "entry_bg": "#040d0a",
+        "fg":       "#e4f4ee",
+        "muted":    "#6db39a",
+        "muted2":   "#3e7a62",
+        "border":   "#1c4a35",
+        "border2":  "#112d20",
+        "accent":   "#00c896",
+        "accent2":  "#1de9b6",
+        "accent3":  "#009b75",
+        "hover":    "#0d2b1f",
+        "success":  "#1de9b6",
+        "warning":  "#f0b429",
+        "error":    "#ff5252",
+        "select":   "#0a3d2a",
+    },
+    "paper": {
+        "bg":       "#f5f3ee",
+        "panel":    "#ffffff",
+        "panel2":   "#faf7f1",
+        "entry_bg": "#ffffff",
+        "fg":       "#1a1a1a",
+        "muted":    "#6b6356",
+        "muted2":   "#4a4238",
+        "border":   "#d8d2c4",
+        "border2":  "#e8e3d6",
+        "accent":   "#b85c2c",
+        "accent2":  "#d27040",
+        "accent3":  "#8c4520",
+        "hover":    "#f0ece4",
+        "success":  "#4a7d4a",
+        "warning":  "#b8862c",
+        "error":    "#b8392c",
+        "select":   "#f3e6dc",
+    },
+    "amber-crt": {
+        "bg":       "#160a02",
+        "panel":    "#1f1004",
+        "panel2":   "#2a1707",
+        "entry_bg": "#100600",
+        "fg":       "#ffd9a3",
+        "muted":    "#c89060",
+        "muted2":   "#8c6545",
+        "border":   "#4a2a10",
+        "border2":  "#2e1908",
+        "accent":   "#ff8a1f",
+        "accent2":  "#ffb060",
+        "accent3":  "#cc6a10",
+        "hover":    "#2a1707",
+        "success":  "#ffb060",
+        "warning":  "#ffd060",
+        "error":    "#ff5a3a",
+        "select":   "#3a1f0a",
+    },
+}
+
+_DEFAULT_THEME = "dark-teal"
+_ACTIVE_THEME: str = _DEFAULT_THEME
 
 
-_CSS = f"""
+# ── Default-only aliases (see module docstring) ───────────────────────
+# Kept so pre-Sprint-2 imports like ``from ui_widgets.theme import BG``
+# keep working. These are frozen to the default palette; call-sites that
+# need live theme-aware colours must use ``rebuild_css()`` + CSS classes.
+_DEFAULT = PALETTES[_DEFAULT_THEME]
+BG       = _DEFAULT["bg"]
+PANEL    = _DEFAULT["panel"]
+PANEL2   = _DEFAULT["panel2"]
+FG       = _DEFAULT["fg"]
+MUTED    = _DEFAULT["muted"]
+MUTED2   = _DEFAULT["muted2"]
+ENTRY_BG = _DEFAULT["entry_bg"]
+BORDER   = _DEFAULT["border"]
+BORDER2  = _DEFAULT["border2"]
+ACCENT   = _DEFAULT["accent"]
+ACCENT2  = _DEFAULT["accent2"]
+ACCENT3  = _DEFAULT["accent3"]
+SUCCESS  = _DEFAULT["success"]
+WARNING  = _DEFAULT["warning"]
+ERROR    = _DEFAULT["error"]
+
+
+def get_active_theme() -> str:
+    """Return the currently active palette name (for persistence)."""
+    return _ACTIVE_THEME
+
+
+def apply_theme(name: str) -> None:
+    """Switch the active palette. No UI redraw — caller must refresh CSS.
+
+    Typical usage in ``notebook_app.build_app``:
+
+    >>> apply_theme("paper")
+    >>> css_widget.value = rebuild_css()
+
+    Raises ``ValueError`` if ``name`` is not a known palette.
+    """
+    global _ACTIVE_THEME
+    if name not in PALETTES:
+        raise ValueError(
+            f"Unknown theme {name!r}. Available: {sorted(PALETTES)}"
+        )
+    _ACTIVE_THEME = name
+
+
+def rebuild_css() -> str:
+    """Return a ``<style>...</style>`` block for the active palette."""
+    return _build_css(PALETTES[_ACTIVE_THEME])
+
+
+def _build_css(p: dict[str, str]) -> str:
+    """Render the CSS stylesheet for a given palette dict."""
+    BG       = p["bg"]
+    PANEL    = p["panel"]
+    PANEL2   = p["panel2"]
+    ENTRY_BG = p["entry_bg"]
+    FG       = p["fg"]
+    MUTED    = p["muted"]
+    MUTED2   = p["muted2"]
+    BORDER   = p["border"]
+    BORDER2  = p["border2"]
+    ACCENT   = p["accent"]
+    ACCENT2  = p["accent2"]
+    ACCENT3  = p["accent3"]
+    SUCCESS  = p["success"]
+    WARNING  = p["warning"]
+    ERROR    = p["error"]
+
+    return f"""
 <style>
-  /* ── page-level dark background ─────────────────────────────────── */
+  /* ── page-level background ─────────────────────────────────────── */
   body, .jp-Notebook, .jp-Cell, .jp-OutputArea, #rendered_cells,
   .vl-OutputArea, .voila-container {{
     background: {BG} !important;
@@ -101,7 +234,7 @@ _CSS = f"""
   }}
   .jupyter-widgets button.mod-primary {{
     background: {ACCENT3} !important;
-    color: #04140e !important;
+    color: {BG} !important;
     border-color: {ACCENT} !important;
   }}
   .jupyter-widgets button.mod-primary:hover {{
@@ -146,7 +279,7 @@ _CSS = f"""
   .brt-brand-badge {{
     width: 34px; height: 34px; border-radius: 8px;
     background: linear-gradient(135deg, {ACCENT3}, {ACCENT2});
-    color: #04140e; font-weight: 800; font-size: 13px;
+    color: {BG}; font-weight: 800; font-size: 13px;
     display: flex; align-items: center; justify-content: center;
     letter-spacing: 0.5px;
   }}
@@ -335,7 +468,7 @@ _CSS = f"""
     border-bottom: 1px solid {BORDER2}; padding-bottom: 6px;
   }}
 
-  /* override jupyter accordion to match dark-teal */
+  /* override jupyter accordion to match active palette */
   .jupyter-widgets.widget-accordion .p-Collapse-header,
   .jupyter-widgets.widget-accordion .lm-Collapse-header {{
     background: {PANEL2} !important;
@@ -356,16 +489,18 @@ _CSS = f"""
 
 
 def inject_css() -> Any:
-    """Return an ``ipywidgets.HTML`` widget carrying the global dark-teal CSS.
+    """Return an ``ipywidgets.HTML`` widget carrying the active CSS.
 
-    Include this once at the top of ``build_app()``.
+    Include this once at the top of ``build_app()``. When the user
+    switches themes at runtime, assign ``rebuild_css()`` to the widget's
+    ``value`` to re-render without reloading the page.
     """
     import ipywidgets as w
-    return w.HTML(value=_CSS)
+    return w.HTML(value=rebuild_css())
 
 
 def section_header(title: str, subtitle: str = "") -> Any:
-    """Uppercase teal section title + optional muted subtitle."""
+    """Uppercase accent section title + optional muted subtitle."""
     import ipywidgets as w
     sub_html = f"<div class='brt-card-sub'>{subtitle}</div>" if subtitle else ""
     return w.HTML(
@@ -420,7 +555,7 @@ def card_layout() -> Any:
 
 
 def section_card(title: str, children: Iterable[Any], subtitle: str = "") -> Any:
-    """VBox with a teal section header + body children, styled as a card."""
+    """VBox with an accent section header + body children, styled as a card."""
     import ipywidgets as w
     head = section_header(title, subtitle)
     return w.VBox([head, *children], layout=card_layout())
