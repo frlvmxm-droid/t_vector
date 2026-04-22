@@ -114,10 +114,14 @@ mid-Wave-7.
 - **Offline single-user "tray" mode** (icon-in-taskbar) is gone.
   Voilà needs a browser tab; users on locked-down workstations
   without a browser are out-of-scope.
-- **Cancel button** for long-running workflows was never
-  cross-implemented; the web UI disables the action button until
-  the worker finishes. Adding a `cancel_event` hook in the service
-  layer is tracked as a follow-up.
+- **Cancel button** is wired for the cluster workflow (Phase 14:
+  `ui_widgets/progress.py::attach_cancel_event` →
+  `threading.Event` → `ClusteringWorkflow.run` → `WorkflowCancelled`)
+  and covered by `tests/test_cluster_cancel.py`. For the train and
+  apply workflows the event is not yet threaded through the service
+  layer — cancel there requires `cancel_event` hooks in
+  `TrainingWorkflow.fit_and_evaluate` and
+  `predict_with_thresholds`; tracked as a follow-up.
 - **Pinning note.** `Dockerfile.jupyterhub` uses
   `jupyterhub/jupyterhub:4.1.5` — the hub image is the only new
   non-wheel dep outside `uv.lock`. Releases should pin the digest

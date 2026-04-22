@@ -229,10 +229,15 @@ shell tools (`~/.classification_tool/` is a regular directory tree).
 
 ## Known limitations
 
-- No cancel button — the action button stays disabled until the
-  worker finishes. Cancelation requires a `cancel_event` hook in the
-  service layer (planned follow-up).
-- No session save/restore (snap.json round-trip).
+- **Cancel button** (red `⏹ Отмена` next to the progress bar) is wired
+  for the **cluster** workflow: the panel passes a
+  `threading.Event` via `ProgressPanel.attach_cancel_event`,
+  `ClusteringWorkflow.run` checks it between stages and raises
+  `WorkflowCancelled`. For **train** and **apply** the event is not
+  yet threaded through the service layer — cancel there requires
+  service-layer `cancel_event` hooks (planned).
+- Session save / restore round-trips widget values (ADR-0009); the
+  new theme choice is persisted under key `ui.theme`.
 - LLM-naming requires either `BRT_LLM_PROVIDER=offline` (deterministic
   CI stub from ADR-0004) or a real provider API key in the kernel
   environment. The dialog's Settings tab indicates which keys are set.
