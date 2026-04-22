@@ -27,43 +27,54 @@ Tk и покрыт тестами. Web-UI (`ui_widgets/*`) построен по
 | `ui_widgets_tk.py` rename + CI-guard | ✅ complete |
 | `_service_snap` unification (Fix C) | ✅ complete |
 | JupyterHub admin-docs | ✅ `docs/JUPYTERHUB_UI.md` |
+| **Спринт 1 — launcher'ы + quickstart** | ✅ complete (`run_web.sh`, `run_web.bat`, `docs/QUICKSTART_WEB_UI.md`, README §8.3) |
 
 ## Известные блокеры / gap'ы
 
 ### Блокеры запуска
-- Нет `run_web.bat` / `run_web.sh` — пользователь не может «в одно
-  нажатие» поднять Voilà на своём ноуте.
-- Нет `docs/QUICKSTART_WEB_UI.md` под локальный запуск (есть только
-  `QUICKSTART_PUTTY.md` — remote через SSH-tunnel).
-- `bootstrap_run.py` всегда требует Tkinter, даже для web-only сценария.
+- ✅ Закрыты в Спринте 1 (`run_web.sh`/`run_web.bat` + quickstart).
+  `bootstrap_run.py` как отдельный desktop-entry уйдёт в Спринте 3.
 
 ### Дизайн-дыры vs ctk_migration_pack
 - Только одна тема (Dark Teal) вместо трёх (добавить Paper, Amber-CRT).
 - Нет theme-switcher в sidebar.
 - `section_card` не поддерживает right-slot для header-кнопок.
 - Нет helper'ов `field_label()` и `separator()`.
-- `chip()` / `badge()` — не покрывают все 5 kind'ов (нет `accent`).
+- `chip()` / `badge()` — не покрывают все 6 kind'ов (нет `accent`;
+  канонический список: `default | accent | ok | warn | err | info`).
 
 ### Архитектурные долги
-- **`app_cluster.run_cluster()`** — 951 строка, дублирует
-  `ClusteringWorkflow.run()` вместо делегирования. Блокер
-  консистентности, но не блокирует web-UI.
-- Deprecated shims в `core/` и `utils/` — мёртвый re-export код.
-- `customtkinter`, `pystray` — в зависимостях, но не нужны для web.
+- **`app_cluster.run_cluster()`** — сейчас ~100 строк
+  (`app_cluster.py:3410–3510`), уже делегирует в
+  `ClusteringWorkflow.run()`. Старая оценка «951 строка» устарела.
+  Будет удалён целиком вместе с `app_cluster.py` в Спринте 3.
+- Deprecated shims в `core/` и `utils/` — мёртвый re-export код
+  (адресуется в Спринте 3).
+- `customtkinter`, `pystray` в `pyproject.toml` — удаляются в
+  Спринте 3 (вместе с `uv lock` регенерацией).
 
-## Развилка стратегии
+## Решение: полный отказ от desktop
 
-**Вопрос**: полностью отказываемся от desktop или оставляем fallback?
+**Принято 2026-04-22.** Ранее в этой секции фиксировалась развилка
+«полный отказ vs desktop-fallback»; выбран **полный отказ**.
 
-- **Полный отказ** → удаляется ~20k LoC, `run_cluster()` больше не
-  проблема, пакет упрощается. Но теряем plotly-визуализации
-  кластеров и tray-icon (desktop-only фичи).
-- **Desktop как fallback** → переписать `app_cluster.run_cluster()`
-  тонким wrapper над `ClusteringWorkflow.run()` (~4 часа), оставить
-  всё остальное как есть.
+**Обоснование:**
+- Сервис-слой (`app_train_service`, `apply_prediction_service`,
+  `cluster_workflow_service`, `app_cluster_pipeline`) уже headless
+  и покрыт тестами (`tests/test_e2e_*`, `tests/test_workflow_contracts.py`).
+- `app_cluster.run_cluster()` сократился до ~100 строк и уже
+  делегирует в `ClusteringWorkflow.run()` — держать Tk-обвязку
+  ради одной функции нерационально.
+- Plotly-визуализации кластеров воспроизводимы в ipywidgets
+  (FigureWidget); tray-icon — заменяется нативным браузерным треем /
+  системным пином вкладки.
 
-Решение влияет на **Спринт 3**. Спринты 1, 2, 4 одинаковы в обоих
-сценариях.
+**Ожидаемый эффект:** минус ~750 KB Tk/CTK-кода, ~15–20k LoC,
+`pyproject.toml` без `customtkinter`/`pystray`, CI без Xvfb.
+
+**Последствия по спринтам:** решение разворачивает Спринт 3 в
+финальный детальный план удаления (см. ниже). Спринты 2 и 4 от
+выбора не зависят.
 
 ---
 
