@@ -178,59 +178,135 @@ design-компоненты, чтобы web-UI визуально совпада
 
 # Спринт 3 — Очистка legacy-кода (1 день)
 
-**Цель**: удалить desktop-UI и deprecated shims, если решено
-окончательно отказаться от GUI.
+**Цель**: удалить весь desktop-UI (Tk + CTK), deprecated shims, сборку
+PyInstaller, Xvfb-джоб в CI и связанные упоминания в документации.
+Развилка из §Решение закрыта: **полный отказ от desktop**.
 
-## Задачи (при условии «полный отказ от desktop»)
+**Ожидаемый эффект:** минус ~750 KB Tk/CTK-кода, ~15–20k LoC; чистый
+`pyproject.toml` без `customtkinter`/`pystray`; `pytest` без Xvfb.
 
-1. **Удалить desktop entry-points**
-   - `app.py`, `app_train.py`, `app_apply.py`, `app_cluster.py`
-   - `app_train_view.py`, `app_apply_view.py`, `app_cluster_view.py`
-   - `app_train_view_ctk.py`, `app_apply_view_ctk.py`, `app_cluster_view_ctk.py`
-   - `app_deps.py`, `cluster_ui_builder.py`
-   - `app_dialogs_ctk.py`, `experiment_history_dialog.py`
-   - `bootstrap_run.py`, `bootstrap_ctk.py`, `bootstrap_ctk_demo.py`
-   - `run.sh`, `run_app.bat`
-   - `ui_widgets_tk.py`, `ui_theme.py`, `ui_theme_ctk.py`
-   - `ctk_migration_pack/` (исходный материал уже использован)
+## 3.1 Удалить UI-слой (GUI-логика + виджеты + темы)
 
-2. **Удалить deprecated re-export shims**
-   - `core/feature_builder.py`, `core/hw_profile.py`, `core/text_utils.py`
-   - `utils/excel_utils.py`, `utils/t5_summarizer.py`, `utils/__init__.py`
-   - Импорты из них в `.coveragerc` — убрать omit-записи
+```
+app.py                              (~122 KB, ~2 399 строк)
+app_train.py                        (~100 KB, ~4 877 строк)
+app_apply.py                        (~100 KB, ~1 753 строки)
+app_cluster.py                      (~250 KB, ~4 362 строки;
+                                     run_cluster() на 3410–3510 уходит с файлом)
+app_deps.py                         (~31 KB, 614 строк)
+app_dialogs_ctk.py                  (~36 KB, 776 строк)
+experiment_history_dialog.py        (~8 KB, 188 строк)
+cluster_ui_builder.py               (~600 B, 19 строк)
+app_train_view.py, app_train_view_ctk.py
+app_apply_view.py, app_apply_view_ctk.py
+app_cluster_view.py, app_cluster_view_ctk.py
+ui_widgets_tk.py                    (~40 KB)
+ui_theme.py                         (~16 KB, 457 строк)
+ui_theme_ctk.py                     (~10 KB, 292 строки)
+bank_reason_trainer_gui.py          (~1 KB, 29 строк — deprecated shim)
+background.png                      (1.9 MB)
+ctk_migration_pack/                 (после копирования paper/amber-crt
+                                     палитр в ui_widgets/theme.py)
+```
 
-3. **Убрать лишние зависимости**
-   - `pyproject.toml` → убрать `customtkinter`, `pystray` из основных
-     dependencies (они только для desktop)
-   - `requirements.txt` — переименовать в `requirements-desktop.txt`
-     или удалить, использовать только `pyproject.toml`
+## 3.2 Удалить desktop-лаунчеры и сборку
 
-4. **Обновить тесты**
-   - Удалить `tests/test_app_*`, `tests/test_*_view*`, `tests/test_ui_smoke.py`
-   - Удалить Tk-mock из `tests/conftest.py`
-   - Убедиться что `pytest -q` проходит без desktop-модулей
+```
+bootstrap_run.py                    (~20 KB, 456 строк)
+bootstrap_ctk.py                    (~8 KB, 191 строка)
+bootstrap_ctk_demo.py               (если есть)
+run.sh, run_app.bat
+bank_reason_trainer.spec            (PyInstaller — CI его не билдит,
+                                     сборка только локально)
+build_exe.bat
+```
 
-5. **Обновить CI**
-   - `.github/workflows/quality-gates.yml` — убрать Xvfb-шаг для UI smoke
+Оставить: `download_sbert.bat` (не Tk-зависим, полезен для web).
 
-6. **Обновить документацию**
-   - `README.md` §6 (UI/Tray), §8.1 (Desktop), §9 (EXE build) — удалить
-   - `CLAUDE.md` — убрать упоминания `app_*.py`, десктопного state
-   - `docs/DEPLOY.md` — вычистить desktop-секции
+## 3.3 Deprecated shims в `core/`, `utils/`
 
-## Задачи (при условии «desktop остаётся fallback»)
+- `core/feature_builder.py`, `core/hw_profile.py`, `core/text_utils.py` —
+  удалить если это re-exports (проверить перед удалением grep'ом).
+- `utils/__init__.py` — **не удалять**. Содержит
+  `from utils import excel_utils, t5_summarizer` — это рабочие
+  headless-утилиты. Почистить только re-exports, которые тянут
+  desktop-модули (если такие есть).
+- `.coveragerc` — убрать `omit`-записи для удалённых файлов.
 
-- `app_cluster.run_cluster()` → тонкая обёртка над `ClusteringWorkflow.run()`
-  с адаптером Tk-progress → service-callback. Ожидаемый результат:
-  951 строка → ~200 строк.
-- Всё остальное из web-миграции остаётся.
+## 3.4 `pyproject.toml` + `uv.lock`
 
-## Критерии готовности
+- Убрать из runtime-deps: `customtkinter>=5.2.0`, `pystray`.
+- **Запустить `uv lock`** и закоммитить `pyproject.toml` + `uv.lock`
+  одним коммитом — CI требует `uv lock --check` (ADR-0008).
+- `requirements.txt` — удалить (или оставить одну строку
+  `# см. pyproject.toml / uv.lock`, если на него ещё ссылается
+  документация до Спринта 3.7).
 
-- [ ] `pytest -q` зелёный после удаления
-- [ ] `python -m bank_reason_trainer --help` работает (CLI оставляем)
-- [ ] `./run_web.sh` запускается на свежем клоне без desktop-deps
-- [ ] Размер репо уменьшился минимум на 15k LoC (if full removal)
+## 3.5 Тесты + `conftest.py`
+
+- **Удалить**:
+  - `tests/test_ui_smoke.py` (CTK под Xvfb).
+  - `tests/test_ui_cluster_e2e.py` (CTK e2e).
+  - `tests/test_app_mixins_import_smoke.py` (import-smoke для
+    `TrainTabMixin`/`ApplyTabMixin`/`ClusterTabMixin`).
+  - `tests/test_ui_widgets_tk_export_smoke.py` (CI-guard для
+    `ui_widgets_tk.py`).
+  - Любые оставшиеся `tests/test_app_*`, `tests/test_*_view*`.
+- **Оставить**:
+  - `tests/test_ui_widgets_import_smoke.py` (ipywidgets).
+  - `tests/test_voila_smoke.py` (Voilà end-to-end).
+- **`tests/conftest.py`** (ст. 23–41 по текущему файлу) — снять Tk/CTK
+  моки: удалить записи `tkinter`, `tkinter.ttk`,
+  `tkinter.filedialog`, `tkinter.messagebox`, `ui_theme`,
+  `ui_widgets`, `ui_widgets_tk`, `customtkinter` из `_make_ui_mock`.
+  После удаления Tk-модулей они больше не импортируются — моки
+  не нужны.
+- Убедиться: `PYTHONPATH=. pytest -q` зелёный без `xvfb-run`.
+
+## 3.6 CI
+
+- `.github/workflows/quality-gates.yml`:
+  - Удалить шаг «UI smoke under Xvfb» и `sudo apt-get install -y
+    xvfb python3-tk`.
+  - Pytest-матрица (3.11–3.13) остаётся как есть.
+- Если `tests/test_voila_smoke.py` сейчас opt-in через
+  `RUN_VOILA_SMOKE=1` — включить по-дефолту в CI (проставить env в
+  job), чтобы web-UI smoke шёл вместо Tk-UI smoke.
+
+## 3.7 Документация
+
+- **`README.md`** — удалить:
+  - §6 «UI / Tray»,
+  - §8.1 «Desktop quick start» (`run_app.bat` / `run.sh`),
+  - §9 «Building a distributable EXE»,
+  - §11 «Keyboard shortcuts» (все шорткаты были Tk).
+  - §8.3 («Web-UI quick start») оставить как единственный путь
+    запуска. Поднять его на верхний уровень `§Quick Start`.
+- **`CLAUDE.md`** — переписать:
+  - «Module Map» → таблицу «Entry Points» убрать целиком
+    (`app.py`, `app_train.py`, `app_apply.py`, `app_cluster.py`,
+    `bootstrap_run.py`).
+  - Раздел «Adding a New ML Config Flag» — убрать пункт 3 про
+    `app_train.py` (ст. ≈3754 и ≈3422); оставить pyproject/service-layer.
+  - Раздел «Building a Distributable» — удалить.
+  - Раздел «Keyboard Shortcuts» — удалить.
+  - «Quick Start» — заменить `python bootstrap_run.py` на
+    `./run_web.sh`.
+- **`docs/DEPLOY.md`** — вычистить десктопные секции (PyInstaller,
+  tray-icon, Tk-headless recipes).
+
+## Критерии готовности Спринта 3
+
+- [ ] `grep -rn "^import tkinter\|^import customtkinter\|^from tkinter\|^from customtkinter" --include="*.py" .`
+      → пусто (исключая тесты, которые тоже удалены).
+- [ ] `pytest -q` зелёный без `xvfb-run` и `python3-tk`.
+- [ ] `./run_web.sh` на свежем клоне поднимает UI (без
+      `customtkinter`/`pystray` в окружении).
+- [ ] `uv lock --check` проходит в CI.
+- [ ] `git diff --stat main` показывает минус ≥ 15k LoC.
+- [ ] README/CLAUDE.md/docs/DEPLOY.md не содержат слов
+      «tkinter», «customtkinter», «PyInstaller», «tray» вне
+      исторического контекста.
 
 ---
 
@@ -262,10 +338,13 @@ self-hosted JupyterHub с нашим web-UI.
    - Env vars для LLM-ключей (с пометкой «use Docker secrets in prod»)
 
 3. **`Dockerfile.jupyterhub`** (новый)
-   - Base: `python:3.11-slim-bookworm`
-   - `uv sync --frozen --extra ml --extra ui`
-   - Pre-download SBERT-модели (opt-in через build-arg)
-   - Entry-point: `jupyterhub -f /srv/jupyterhub_config.py`
+   - Base: `python:3.11-slim-bookworm` — **без X11 / Tk / GUI-пакетов**
+     (Спринт 3 убирает `customtkinter`, `pystray`, `python3-tk` как
+     class, так что `apt install xvfb python3-tk` здесь не нужен).
+   - `uv sync --frozen --extra ml --extra ui` (без `--extra desktop`
+     или эквивалента — desktop-extras нет).
+   - Pre-download SBERT-моделей (opt-in через build-arg).
+   - Entry-point: `jupyterhub -f /srv/jupyterhub_config.py`.
 
 4. **Обновить `docs/JUPYTERHUB_UI.md`**
    - Добавить §9 «Self-hosted via docker-compose» со ссылками на
@@ -287,27 +366,28 @@ self-hosted JupyterHub с нашим web-UI.
 
 | # | Спринт | Срок | Зависимости | Приоритет |
 |---|---|---|---|---|
-| 1 | Launcher'ы + quickstart | 1 день | — | **P0** |
+| 1 | Launcher'ы + quickstart | — | — | ✅ DONE 2026-04-22 |
 | 2 | Дизайн-паритет | 1 день | — | **P0** |
-| 3 | Очистка legacy | 1 день | Решение по desktop | P1 |
-| 4 | JupyterHub deploy templates | 0.5 дня | — | P1 |
+| 3 | Очистка legacy (полный отказ от desktop) | 1 день | §Решение (закрыто) | **P0** |
+| 4 | JupyterHub deploy templates | 0.5 дня | Спринт 3 (Dockerfile использует очищенный `pyproject.toml`) | P1 |
 
 ## Порядок выполнения
 
 ```
-Спринт 1  ─┐
-           ├── могут идти параллельно
-Спринт 2  ─┘
-           │
-Спринт 3  ─┤  (после решения по desktop)
-           │
-Спринт 4  ─┘
+Спринт 1 ✅ DONE
+          │
+          ├── Спринт 2 ─┐
+          │              ├── могут идти параллельно
+          └── Спринт 3 ─┘
+                         │
+                         └── Спринт 4 (Dockerfile наследует чистые deps)
 ```
 
 ## Критерии успеха всего плана
 
-- [ ] Коммиты в `claude/code-review-assistant-0Fmdx`, атомарные per-спринт
+- [ ] Коммиты в `claude/add-pyinstaller-workflow-TKjgJ`, атомарные per-спринт
 - [ ] Полная regression: `pytest --ignore=tests/test_heavy_modules.py` зелёный
+- [ ] `grep -rn "import tkinter\|customtkinter" --include="*.py" .` → пусто
 - [ ] Voilà cold-start ≤ 2 секунды
 - [ ] Пользователь на чистой машине запускает UI ≤ 5 минут от git clone
       до рабочего dashboard в браузере
