@@ -2,43 +2,13 @@
 """Shared pytest fixtures for the classification-tool test suite."""
 from __future__ import annotations
 
-import importlib.util as _ilu
 import pathlib
 import sys
 from typing import List
-from unittest.mock import MagicMock
 
 import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
-
-
-# ---------------------------------------------------------------------------
-# Tk stubbing — install at collection time so tests that import the UI
-# mixins (app_cluster, app_train, app_apply) can load on headless runners.
-# Only stubs what is actually missing; real tkinter is left alone when
-# available. See tests/test_app_mixins_import_smoke.py for the rationale.
-# ---------------------------------------------------------------------------
-
-def _make_ui_mock(name: str) -> MagicMock:
-    m = MagicMock()
-    m.__name__ = name
-    m.__spec__ = MagicMock()
-    return m
-
-
-for _mod in (
-    "tkinter",
-    "tkinter.ttk",
-    "tkinter.filedialog",
-    "tkinter.messagebox",
-    "ui_theme",
-    "ui_widgets",
-    "ui_widgets_tk",
-    "customtkinter",
-):
-    if _mod not in sys.modules and _ilu.find_spec(_mod.split(".")[0]) is None:
-        sys.modules[_mod] = _make_ui_mock(_mod)
 
 
 # ---------------------------------------------------------------------------
