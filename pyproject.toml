@@ -1,7 +1,7 @@
 [project]
 name = "classification-tool"
-version = "9.0.0"
-description = "BankReasonTrainer — классификатор причин обращений"
+version = "10.0.0"
+description = "BankReasonTrainer — классификатор причин обращений (web UI)"
 requires-python = ">=3.11,<3.14"
 # Mandatory runtime deps — web-UI (Voilà) + headless CLI + tests.
 # Optional ML extras (torch, transformers, sentence-transformers, setfit, umap,
