@@ -87,6 +87,134 @@ def build_train_panel() -> tuple[Any, dict[str, Any], Callable[[], dict[str, Any
         style={"description_width": "initial"},
     )
 
+    # ── Preprocessing (parity with desktop train tab screenshot) ────────
+    # Controls piped into make_hybrid_vectorizer(...) below: n-gram ranges,
+    # min_df / max_features / sublinear_tf, Russian stop-words, noise
+    # tokens / phrases, per-field TF-IDF, SVD (LSA), lemmatization, and
+    # dialog meta-features. Exclusion editors live in their own accordion.
+    _desc_style = {"description_width": "initial"}
+    char_ng_min = w.BoundedIntText(
+        value=2, min=1, max=10, description="Симв. n-граммы от:",
+        layout=w.Layout(width="200px"), style=_desc_style,
+    )
+    char_ng_max = w.BoundedIntText(
+        value=9, min=1, max=10, description="до:",
+        layout=w.Layout(width="120px"), style=_desc_style,
+    )
+    word_ng_min = w.BoundedIntText(
+        value=1, min=1, max=5, description="Слов. n-граммы от:",
+        layout=w.Layout(width="200px"), style=_desc_style,
+    )
+    word_ng_max = w.BoundedIntText(
+        value=3, min=1, max=5, description="до:",
+        layout=w.Layout(width="120px"), style=_desc_style,
+    )
+    min_df = w.BoundedIntText(
+        value=3, min=1, max=50, description="Мин. частота слова:",
+        layout=w.Layout(width="220px"), style=_desc_style,
+    )
+    max_features = w.BoundedIntText(
+        value=300_000, min=10_000, max=2_000_000, step=10_000,
+        description="Макс. признаков:",
+        layout=w.Layout(width="240px"), style=_desc_style,
+    )
+    sublinear_tf = w.Checkbox(value=True, description="Логарифм TF")
+
+    use_stop_words = w.Checkbox(value=True, description="Стоп-слова (рус.)")
+    use_noise_tokens = w.Checkbox(value=True, description="Шумовые токены")
+    use_noise_phrases = w.Checkbox(value=True, description="Шумовые фразы")
+    use_per_field = w.Checkbox(value=True, description="TF-IDF по полям")
+    use_svd = w.Checkbox(value=True, description="SVD (LSA)")
+    svd_components = w.BoundedIntText(
+        value=200, min=10, max=500, description="Компоненты:",
+        layout=w.Layout(width="200px"), style=_desc_style,
+    )
+    use_lemma = w.Checkbox(value=True, description="Лемматизация")
+    use_meta = w.Checkbox(value=False, description="Мета-признаки диалога")
+
+    # Exclusion editors — persisted to user_exclusions.json via config.exclusions.
+    # Textareas pre-filled from disk; "Сохранить" button flushes edits.
+    try:
+        from config.exclusions import load_exclusions
+        _excl = load_exclusions()
+    except Exception:  # noqa: BLE001 — missing module must not block UI
+        _excl = {"stop_words": [], "noise_tokens": [], "noise_phrases": []}
+
+    excl_stop_words = w.Textarea(
+        value="\n".join(_excl.get("stop_words", [])),
+        placeholder="По слову в строке — добавляются к русским стоп-словам",
+        layout=w.Layout(width="95%", height="110px"),
+    )
+    excl_noise_tokens = w.Textarea(
+        value="\n".join(_excl.get("noise_tokens", [])),
+        placeholder="По токену в строке — исключаются из TF-IDF",
+        layout=w.Layout(width="95%", height="110px"),
+    )
+    excl_noise_phrases = w.Textarea(
+        value="\n".join(_excl.get("noise_phrases", [])),
+        placeholder="По фразе в строке — удаляются из текста до токенизации",
+        layout=w.Layout(width="95%", height="110px"),
+    )
+    excl_save_btn = w.Button(
+        description="💾 Сохранить исключения", button_style="",
+        layout=w.Layout(width="240px"),
+    )
+    excl_reload_btn = w.Button(
+        description="↻ Перечитать с диска",
+        layout=w.Layout(width="200px"),
+    )
+    excl_status = w.HTML("")
+
+    def _lines(text: str) -> list[str]:
+        return [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+
+    def _on_save_excl(_btn: Any) -> None:
+        try:
+            from config.exclusions import save_exclusions
+            save_exclusions({
+                "stop_words":    _lines(excl_stop_words.value),
+                "noise_tokens":  _lines(excl_noise_tokens.value),
+                "noise_phrases": _lines(excl_noise_phrases.value),
+            })
+            excl_status.value = (
+                f"<span style='color:#1de9b6'>Сохранено: "
+                f"{len(_lines(excl_stop_words.value))} стоп-слов, "
+                f"{len(_lines(excl_noise_tokens.value))} токенов, "
+                f"{len(_lines(excl_noise_phrases.value))} фраз</span>"
+            )
+        except Exception as exc:  # noqa: BLE001
+            excl_status.value = f"<span style='color:#ff5252'>Ошибка: {exc}</span>"
+
+    def _on_reload_excl(_btn: Any) -> None:
+        try:
+            from config.exclusions import load_exclusions as _reload
+            # bypass cache
+            import config.exclusions as _mod
+            _mod._cache = None
+            data = _reload()
+            excl_stop_words.value = "\n".join(data.get("stop_words", []))
+            excl_noise_tokens.value = "\n".join(data.get("noise_tokens", []))
+            excl_noise_phrases.value = "\n".join(data.get("noise_phrases", []))
+            excl_status.value = "<span style='color:#1de9b6'>Перечитано с диска.</span>"
+        except Exception as exc:  # noqa: BLE001
+            excl_status.value = f"<span style='color:#ff5252'>Ошибка: {exc}</span>"
+
+    excl_save_btn.on_click(_on_save_excl)
+    excl_reload_btn.on_click(_on_reload_excl)
+
+    excl_accordion = w.Accordion(children=[w.VBox([
+        w.HTML("<div class='brt-field-label'>Стоп-слова (по строке)</div>"),
+        excl_stop_words,
+        w.HTML("<div class='brt-field-label'>Шумовые токены</div>"),
+        excl_noise_tokens,
+        w.HTML("<div class='brt-field-label'>Шумовые фразы</div>"),
+        excl_noise_phrases,
+        w.HBox([excl_save_btn, excl_reload_btn]),
+        excl_status,
+    ])])
+    excl_accordion.set_title(0, "Редактировать слова-исключения (user_exclusions.json)")
+    excl_accordion.selected_index = None  # collapsed by default
+
     # ── Advanced Accordion (TrainingOptions extras) ─────────────────────
     use_label_smoothing = w.Checkbox(value=False, description="Label smoothing")
     label_smoothing_eps = w.FloatSlider(
@@ -189,6 +317,22 @@ def build_train_panel() -> tuple[Any, dict[str, Any], Callable[[], dict[str, Any
         "train.oversample_strategy": oversample_strategy,
         "train.max_dup_per_sample": max_dup_per_sample,
         "train.shared_path": shared_path,
+        # Preprocessing (text analysis) parity with desktop screenshot.
+        "train.char_ng_min": char_ng_min,
+        "train.char_ng_max": char_ng_max,
+        "train.word_ng_min": word_ng_min,
+        "train.word_ng_max": word_ng_max,
+        "train.min_df": min_df,
+        "train.max_features": max_features,
+        "train.sublinear_tf": sublinear_tf,
+        "train.use_stop_words": use_stop_words,
+        "train.use_noise_tokens": use_noise_tokens,
+        "train.use_noise_phrases": use_noise_phrases,
+        "train.use_per_field": use_per_field,
+        "train.use_svd": use_svd,
+        "train.svd_components": svd_components,
+        "train.use_lemma": use_lemma,
+        "train.use_meta": use_meta,
     }
 
     def snap_fn() -> dict[str, Any]:
@@ -230,14 +374,39 @@ def build_train_panel() -> tuple[Any, dict[str, Any], Callable[[], dict[str, Any
             progress.log(f"  строк: {len(texts)} | классов: {len(set(labels))}")
 
             progress.update(0.05, "Подготовка TF-IDF…")
-            from sklearn.feature_extraction.text import TfidfVectorizer
-            from sklearn.pipeline import FeatureUnion
-            features = FeatureUnion([
-                ("word", TfidfVectorizer(analyzer="word", ngram_range=(1, 2),
-                                         min_df=2, max_df=0.95, sublinear_tf=True)),
-                ("char", TfidfVectorizer(analyzer="char_wb", ngram_range=(3, 5),
-                                         min_df=2, max_df=0.95, sublinear_tf=True)),
-            ])
+            from ml_vectorizers import make_hybrid_vectorizer
+            # Textareas may carry unsaved edits — they take precedence over
+            # the on-disk user_exclusions.json so users can try settings
+            # without committing them.
+            _extra_stop = _lines(excl_stop_words.value)
+            _extra_tok  = _lines(excl_noise_tokens.value)
+            _extra_ph   = _lines(excl_noise_phrases.value)
+            # Per-field needs base_weights; without them make_hybrid_vectorizer
+            # silently falls back to the legacy unified TF-IDF. Mirror the
+            # desktop defaults (w_desc=2 / w_client=3 / w_operator=1).
+            _base_w = (
+                {"w_desc": 2, "w_client": 3, "w_operator": 1}
+                if use_per_field.value else None
+            )
+            features = make_hybrid_vectorizer(
+                char_ng=(int(char_ng_min.value), int(char_ng_max.value)),
+                word_ng=(int(word_ng_min.value), int(word_ng_max.value)),
+                min_df=int(min_df.value),
+                max_features=int(max_features.value),
+                sublinear_tf=bool(sublinear_tf.value),
+                use_stop_words=bool(use_stop_words.value),
+                extra_stop_words=_extra_stop or None,
+                extra_noise_tokens=_extra_tok or None,
+                extra_noise_phrases=_extra_ph or None,
+                use_noise_tokens=bool(use_noise_tokens.value),
+                use_noise_phrases=bool(use_noise_phrases.value),
+                use_per_field=bool(use_per_field.value),
+                base_weights=_base_w,
+                use_svd=bool(use_svd.value),
+                svd_components=int(svd_components.value),
+                use_lemma=bool(use_lemma.value),
+                use_meta=bool(use_meta.value),
+            )
 
             from app_train_service import TrainingWorkflow
             from ml_training import TrainingOptions
@@ -334,6 +503,17 @@ def build_train_panel() -> tuple[Any, dict[str, Any], Callable[[], dict[str, Any
         [w.HBox([upload, shared_path]), columns_accordion],
         subtitle="Данные для обучения (XLSX/CSV). Колонки по умолчанию: text / label.",
     )
+    preprocessing_card = section_card(
+        "ПРЕДОБРАБОТКА ТЕКСТА",
+        [
+            w.HBox([char_ng_min, char_ng_max, word_ng_min, word_ng_max]),
+            w.HBox([min_df, max_features, sublinear_tf]),
+            w.HBox([use_stop_words, use_noise_tokens, use_noise_phrases, use_per_field]),
+            w.HBox([use_svd, svd_components, use_lemma, use_meta]),
+            excl_accordion,
+        ],
+        subtitle="n-граммы, шумовые фильтры, лемматизация, SVD (LSA), мета-признаки.",
+    )
     params_card = section_card(
         "ПАРАМЕТРЫ ОБУЧЕНИЯ",
         [
@@ -343,7 +523,7 @@ def build_train_panel() -> tuple[Any, dict[str, Any], Callable[[], dict[str, Any
             w.HBox([calib, fuzzy_dedup, fuzzy_thr]),
             advanced,
         ],
-        subtitle="TF-IDF (word 1–2 + char 3–5) → LinearSVC → CalibratedClassifierCV.",
+        subtitle="PhraseRemover → hybrid TF-IDF → LinearSVC → CalibratedClassifierCV.",
     )
     run_card = section_card(
         "ОБУЧЕНИЕ",
@@ -356,7 +536,7 @@ def build_train_panel() -> tuple[Any, dict[str, Any], Callable[[], dict[str, Any
         subtitle="macro-F1 / accuracy / размер сплитов + скачивание model.joblib.",
     )
 
-    vbox = w.VBox([sources_card, params_card, run_card, metrics_card])
+    vbox = w.VBox([sources_card, preprocessing_card, params_card, run_card, metrics_card])
     return vbox, widgets_by_key, snap_fn
 
 
