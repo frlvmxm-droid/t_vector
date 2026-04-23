@@ -15,11 +15,11 @@ git clone <repo-url>
 cd t_vector
 python -m venv .venv
 source .venv/bin/activate     # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-pip install ruff==0.6.9 mypy==1.11.2 bandit==1.7.9 pytest pytest-cov
+pip install -e ".[dev,ui]"   # [ml] additionally for SBERT / torch
 ```
 
-Run the app: `python bootstrap_run.py`.
+Run the web UI: `./run_web.sh` (Linux/macOS) or `run_web.bat` (Windows).
+Or headless CLI: `python -m bank_reason_trainer {train,apply,cluster} --help`.
 
 ## Running the Quality Gates Locally
 

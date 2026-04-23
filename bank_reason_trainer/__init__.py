@@ -18,4 +18,8 @@ See ADR-0004 for the offline LLM replay that pairs with this CLI in CI.
 """
 from .cli import build_parser, main
 
-__all__ = ["build_parser", "main"]
+# Keep in sync with pyproject.toml:[project] version.
+# ``ui_widgets.notebook_app`` reads this for the sidebar footer.
+__version__ = "10.0.0"
+
+__all__ = ["build_parser", "main", "__version__"]

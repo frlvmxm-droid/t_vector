@@ -369,7 +369,7 @@ wheels = [
 
 [[package]]
 name = "classification-tool"
-version = "9.0.0"
+version = "10.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },

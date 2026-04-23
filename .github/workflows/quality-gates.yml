@@ -44,17 +44,20 @@ jobs:
       - name: Mypy (soft, project defaults)
         run: mypy --config-file pyproject.toml . || true
 
-      - name: Mypy (strict on ml_* and workflow_contracts)
+      - name: Mypy (strict on ml_* + workflow_contracts + ui_widgets core)
         run: |
           # follow_imports=silent keeps strict scope to the gated modules;
           # imports into legacy code are type-checked shallowly so cascade
           # errors in ml_vectorizers/ml_diagnostics don't block the gate.
           # Wave 5 target: ≥25 modules. Extend as each becomes clean.
+          # ui_widgets/{theme,session,notebook_app}.py added in 10.0.0
+          # (ADR-0009) once Sprint 2 settled their public API.
           mypy --strict --ignore-missing-imports --follow-imports=silent \
             ml_core.py ml_compat.py workflow_contracts.py artifact_contracts.py \
             ml_distillation.py ml_sbert_bootstrap.py \
             llm_reranker.py cluster_workflow_service.py \
-            app_train_service.py bank_reason_trainer/cli.py
+            app_train_service.py bank_reason_trainer/cli.py \
+            ui_widgets/theme.py ui_widgets/session.py ui_widgets/notebook_app.py
 
       - name: Ruff BLE (blocking on gated-17)
         run: |
@@ -142,8 +145,10 @@ jobs:
 
       - name: Generate SBOM (CycloneDX JSON)
         run: |
-          cyclonedx-py requirements --input-file requirements.locked.txt \
-            --output-format json --output-file sbom.json
+          # cyclonedx-py 4.x changed its CLI — requirements file is now
+          # a positional arg, --output-file is -o, --output-format is --of.
+          cyclonedx-py requirements requirements.locked.txt \
+            --of json -o sbom.json
           echo "SBOM entries: $(python -c 'import json;print(len(json.load(open(\"sbom.json\")).get(\"components\",[])))')"
 
       - name: Upload SBOM artifact
@@ -220,11 +225,15 @@ jobs:
       - name: Install web-UI deps
         run: |
           python -m pip install --upgrade pip
+          # ipykernel is required for voila to spawn a Python kernel —
+          # without it the smoke notebook returns HTTP 500 "No Jupyter
+          # kernel for language 'python' found".
           pip install \
             "scikit-learn>=1.4" "numpy>=1.24" "scipy>=1.11" \
             "joblib>=1.3" "openpyxl>=3.1" "pandas>=2.1" \
             "cryptography>=42.0" "psutil>=5.9" \
-            "ipywidgets>=8.0" "voila>=0.5" requests pytest
+            "ipywidgets>=8.0" "voila>=0.5" "ipykernel>=6.0" \
+            requests pytest
 
       - name: Run Voilà smoke
         env:

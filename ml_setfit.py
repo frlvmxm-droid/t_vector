@@ -103,7 +103,7 @@ class SetFitClassifier:
         batch_size       — размер батча контрастного обучения
         fp16             — использовать mixed-precision (только GPU)
         device           — "auto" | "cpu" | "cuda"
-        cache_dir        — путь к папке кеша (None = sbert_models/ рядом с app.py)
+        cache_dir        — путь к папке кеша (None = sbert_models/ в корне репо)
         log_cb           — callback(str) для текстового лога
         progress_cb      — callback(float, str) для прогресс-бара
         progress_range   — диапазон (start%, end%) прогресс-бара

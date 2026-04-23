@@ -1,15 +1,17 @@
 """Smoke tests for the reproducible-build contract (ADR-0008).
 
 These do not actually build the image or invoke uv — they just guard
-the three drift modes that motivated Wave 8.2:
+the drift modes that motivated Wave 8.2:
 
-1. ``uv.lock`` exists and is well-formed TOML.
-2. Every "Обязательные" entry in ``requirements.txt`` is also declared
-   in ``pyproject.toml`` ``[project.dependencies]``. Drift here is what
-   broke the bootstrap launcher in Wave 6 incident #4.
-3. The Dockerfile still installs from the lock — a future
+1. ``uv.lock`` exists and is well-formed TOML with the pinned wheel set.
+2. The dev Dockerfile still installs from the lock — a future
    ``pip install <name>`` shortcut would silently leak un-pinned wheels
    into the release image.
+
+Prior to 10.0.0 (ADR-0009) the tests also cross-checked a
+`requirements.txt` Обязательные block against pyproject. That file was
+deleted together with the desktop launcher; ``pyproject.toml`` +
+``uv.lock`` are now the sole source of truth.
 """
 
 from __future__ import annotations
@@ -42,25 +44,6 @@ def _direct_deps_from_pyproject() -> set[str]:
     return out
 
 
-def _required_block_from_requirements_txt() -> set[str]:
-    """Parse only the Обязательные block (above the first 'Опциональные')."""
-    text = (ROOT / "requirements.txt").read_text(encoding="utf-8")
-    out: set[str] = set()
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line:
-            continue
-        # Stop at the optional-deps banner.
-        if "Опциональные" in line:
-            break
-        if line.startswith("#"):
-            continue
-        head = re.split(r"[<>=!~;\[ ]", line, maxsplit=1)[0]
-        if head:
-            out.add(_normalise_pkg(head))
-    return out
-
-
 def test_uv_lock_exists_and_parses() -> None:
     lock = ROOT / "uv.lock"
     assert lock.is_file(), "uv.lock missing — run `uv lock` (ADR-0008)"
@@ -73,24 +56,28 @@ def test_uv_lock_exists_and_parses() -> None:
         assert must in names, f"{must} missing from uv.lock"
 
 
-def test_pyproject_deps_cover_requirements_txt() -> None:
-    """Every Обязательные line in requirements.txt → pyproject dependency."""
-    pyproject = _direct_deps_from_pyproject()
-    required = _required_block_from_requirements_txt()
-    missing = required - pyproject
-    assert not missing, (
-        f"requirements.txt declares {missing!r} but pyproject.toml does not. "
-        "Add to [project.dependencies] (ADR-0008)."
-    )
+def test_pyproject_has_web_ui_core_deps() -> None:
+    """Core runtime deps must be present in [project.dependencies]."""
+    deps = _direct_deps_from_pyproject()
+    # After ADR-0009 (release 10.0.0) the runtime is web-only; desktop
+    # packages (customtkinter, pystray, Pillow) must not reappear.
+    for must in ("numpy", "scikit-learn", "scipy", "joblib", "pandas",
+                 "openpyxl", "cryptography", "matplotlib"):
+        assert must in deps, f"{must} missing from pyproject [project.dependencies]"
+    for banned in ("customtkinter", "pystray"):
+        assert banned not in deps, (
+            f"{banned!r} is a desktop-only dep removed in ADR-0009; "
+            "it must not reappear in [project.dependencies]."
+        )
 
 
 def test_dockerfile_uses_uv_sync_not_pip_install() -> None:
     """Guards against the `pip install <name>` shortcut regression."""
     df = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert "uv sync --frozen" in df, "Dockerfile must install via uv sync --frozen"
-    # `pip install --no-cache-dir <name>` is the regression we're guarding
-    # against. `pip install -r requirements.txt` is also forbidden in the
-    # image — bootstrap_run.py uses it on the desktop, not in CI.
+    # `pip install -r requirements.txt` would be the regression we're
+    # guarding against. `pip install --no-cache-dir scikit-learn` is the
+    # other shortcut that could leak un-pinned wheels.
     for forbidden in ("pip install -r", "pip install --no-cache-dir scikit-learn"):
         assert forbidden not in df, (
             f"Dockerfile must not contain {forbidden!r} (ADR-0008)"

@@ -176,7 +176,7 @@ def build_app() -> Any:
     workflow_title = w.HTML("<div class='brt-nav-section'>WORKFLOW</div>")
     context_title = w.HTML("<div class='brt-nav-section'>КОНТЕКСТ</div>")
     hw_card = w.HTML(_hardware_card_html())
-    footer_html = w.HTML("<div class='brt-footer'>v3.4.1 · build 1248</div>")
+    footer_html = w.HTML(f"<div class='brt-footer'>{_version_label()}</div>")
 
     # ── CSS widget (honours restored _ACTIVE_THEME) ─────────────────────
     css_widget = inject_css()
@@ -261,8 +261,8 @@ def build_app() -> Any:
 
 def _wire_session(
     *,
-    widgets_by_key: dict,
-    snap_fns: tuple,
+    widgets_by_key: dict[str, Any],
+    snap_fns: tuple[Any, ...],
     load_last_session: Any,
     debounced_saver_cls: Any,
 ) -> Any:
@@ -290,8 +290,8 @@ def _wire_session(
             except Exception:  # noqa: BLE001 — TraitError / TypeError / ValueError
                 pass
 
-    def _collect_snap() -> dict:
-        merged: dict = {}
+    def _collect_snap() -> dict[str, Any]:
+        merged: dict[str, Any] = {}
         for fn in snap_fns:
             try:
                 merged.update(fn())
@@ -311,6 +311,25 @@ def _wire_session(
             continue
 
     return saver
+
+
+def _version_label() -> str:
+    """Best-effort version string for the sidebar footer.
+
+    Reads ``bank_reason_trainer.__version__`` first; falls back to
+    ``importlib.metadata`` if the package is editable-installed but the
+    shim is unavailable; final fallback is the literal string ``dev``.
+    """
+    try:
+        from bank_reason_trainer import __version__ as v
+        return f"v{v}"
+    except Exception:  # noqa: BLE001 — import failures are non-fatal
+        pass
+    try:
+        from importlib.metadata import version as _md_version
+        return f"v{_md_version('classification-tool')}"
+    except Exception:  # noqa: BLE001
+        return "v—dev"
 
 
 def _hardware_card_html() -> str:
