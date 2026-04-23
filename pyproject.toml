@@ -50,9 +50,12 @@ ml = [
 ]
 # Jupyter / Voilà web UI — install on the JupyterHub user image.
 # See docs/JUPYTERHUB_UI.md for deployment details.
+# ipykernel provides the Python kernel Voilà needs to execute the notebook;
+# without it, Voilà returns 500 "No Jupyter kernel for language 'python' found".
 ui = [
     "ipywidgets>=8.0",
     "voila>=0.5",
+    "ipykernel>=6.0",
 ]
 
 [build-system]

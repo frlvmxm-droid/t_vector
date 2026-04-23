@@ -6,14 +6,14 @@ REM  Works on Windows 10/11. Unlike run_app.bat this does NOT require
 REM  Tkinter -- web-UI runs in the browser over ipywidgets + Voila.
 REM
 REM  Environment overrides (optional):
-REM    BRT_PORT     -- port to bind Voila (default: 8866)
+REM    BRT_PORT     -- port to bind Voila (default: 8888)
 REM    BRT_HOST     -- host to bind Voila (default: 127.0.0.1)
 REM    BRT_NO_OPEN  -- set to 1 to skip auto-opening the browser
 REM ===================================================================
 setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
 
-if "%BRT_PORT%"=="" (set "PORT=8866") else (set "PORT=%BRT_PORT%")
+if "%BRT_PORT%"=="" (set "PORT=8888") else (set "PORT=%BRT_PORT%")
 if "%BRT_HOST%"=="" (set "HOST=127.0.0.1") else (set "HOST=%BRT_HOST%")
 
 REM --- pick Python interpreter -------------------------------------
@@ -54,16 +54,30 @@ for /f "tokens=*" %%V in ('!PY! --version 2^>^&1') do set "PYVER=%%V"
 echo [run_web] using: !PYVER!  (!PY!^)
 
 REM --- ensure ui deps ----------------------------------------------
-!PY! -c "import voila, ipywidgets" >nul 2>&1
+!PY! -c "import voila, ipywidgets, ipykernel" >nul 2>&1
 if !ERRORLEVEL! NEQ 0 (
     echo [run_web] installing web-UI dependencies ^(this can take a minute on first run^)...
     !PY! -m pip install --quiet --disable-pip-version-check -e ".[ui]"
     if !ERRORLEVEL! NEQ 0 (
         echo.
         echo ERROR: pip install failed. Try manually:
-        echo          !PY! -m pip install "ipywidgets>=8.0" "voila>=0.5"
+        echo          !PY! -m pip install "ipywidgets>=8.0" "voila>=0.5" "ipykernel>=6.0"
         pause
         exit /b 1
+    )
+)
+
+REM --- ensure a Python kernelspec is registered --------------------
+REM On fresh python.org installs the ipykernel package is importable
+REM but no kernelspec is registered, and Voila returns 500
+REM "No Jupyter kernel for language 'python' found". Register once.
+!PY! -c "from jupyter_client.kernelspec import find_kernel_specs as f; import sys; sys.exit(0 if 'python3' in f() else 1)" >nul 2>&1
+if !ERRORLEVEL! NEQ 0 (
+    echo [run_web] registering Python kernelspec for Voila...
+    !PY! -m ipykernel install --user --name python3 --display-name "Python 3" >nul 2>&1
+    if !ERRORLEVEL! NEQ 0 (
+        echo WARNING: could not register kernelspec. Run manually if Voila errors:
+        echo            !PY! -m ipykernel install --user --name python3
     )
 )
 
@@ -71,7 +85,7 @@ REM --- check port is free -----------------------------------------
 !PY! -c "import socket,sys; s=socket.socket(); sys.exit(0) if s.connect_ex(('%HOST%',%PORT%)) else sys.exit(1)" >nul 2>&1
 if !ERRORLEVEL! NEQ 0 (
     echo ERROR: port %PORT% on %HOST% is already in use.
-    echo        Pick another one:  set BRT_PORT=8867 ^&^& run_web.bat
+    echo        Pick another one:  set BRT_PORT=8889 ^&^& run_web.bat
     pause
     exit /b 1
 )

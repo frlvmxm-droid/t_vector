@@ -71,14 +71,14 @@ Tk и покрыт тестами. Web-UI (`ui_widgets/*`) построен по
 
 **Цель**: пользователь на Windows или Linux делает `git clone` +
 двойной клик по launcher'у — и получает работающий web-UI на
-`http://localhost:8866/`.
+`http://localhost:8888/`.
 
 ## Задачи
 
 1. **`run_web.bat`** (новый файл, корень проекта)
    - Детект Python: `py -3` → `python` → фатальная ошибка с ссылкой на python.org
    - Проверка `voila` + `ipywidgets` через `python -c "import …"` — если нет, `pip install -e ".[ui]"`
-   - Свободный порт: 8866 по умолчанию, fallback через env `BRT_PORT`
+   - Свободный порт: 8888 по умолчанию, fallback через env `BRT_PORT`
    - Автооткрытие браузера: `start "" http://localhost:%PORT%/`
    - Exec: `python -m voila notebooks\ui.ipynb --port=%PORT% --no-browser`
 
@@ -91,7 +91,7 @@ Tk и покрыт тестами. Web-UI (`ui_widgets/*`) построен по
    - Поддержка env: `BRT_PORT`, `BRT_HOST` (default `127.0.0.1`)
 
 3. **`docs/QUICKSTART_WEB_UI.md`** (новый)
-   - §1 Требования (Python 3.11+, свободный порт 8866)
+   - §1 Требования (Python 3.11+, свободный порт 8888)
    - §2 Windows: `run_web.bat`
    - §3 Linux / macOS: `./run_web.sh`
    - §4 Альтернатива — ручной запуск через `uv`

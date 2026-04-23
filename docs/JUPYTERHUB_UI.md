@@ -103,8 +103,8 @@ python -c "from ui_widgets import build_app; print(type(build_app()))"
 #   → <class 'ipywidgets.widgets.widget_box.VBox'>
 
 # 4. Voilà
-voila notebooks/ui.ipynb --port 8866 --no-browser
-# open http://localhost:8866/ in a browser
+voila notebooks/ui.ipynb --port 8888 --no-browser
+# open http://localhost:8888/ in a browser
 ```
 
 ---

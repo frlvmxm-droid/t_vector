@@ -192,7 +192,7 @@ run_web.bat
 1. Находит Python 3.11+ (детектит `py -3.11` на Windows, `python3.11` / `python3` на Linux).
 2. При первом запуске ставит web-UI deps: `pip install -e ".[ui]"` (ipywidgets + voila + базовые ML-либы).
 3. Проверяет что порт свободен.
-4. Запускает Voilà на `http://127.0.0.1:8866/` и открывает браузер.
+4. Запускает Voilà на `http://127.0.0.1:8888/` и открывает браузер.
 
 Ctrl+C в терминале корректно останавливает сервер.
 
@@ -207,7 +207,7 @@ uv sync --frozen --extra ui
 #   или: pip install -e ".[ui]"
 
 # Запуск Voilà
-PYTHONPATH=. voila notebooks/ui.ipynb --port 8866 --no-browser
+PYTHONPATH=. voila notebooks/ui.ipynb --port 8888 --no-browser
 ```
 
 Страница сохраняет значения виджетов (`k_clusters`, `vec_mode`, пороги

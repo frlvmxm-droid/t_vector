@@ -6,7 +6,7 @@
 # ipywidgets + Voilà stack from `pyproject.toml` [ui] extra.
 #
 # Environment overrides:
-#   BRT_PORT     — port to bind Voilà (default: 8866)
+#   BRT_PORT     — port to bind Voilà (default: 8888)
 #   BRT_HOST     — host to bind Voilà (default: 127.0.0.1)
 #   PYTHON       — explicit python interpreter (default: python3.11, then python3)
 #   BRT_NO_OPEN  — set to 1 to skip auto-opening the browser
@@ -16,7 +16,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-PORT="${BRT_PORT:-8866}"
+PORT="${BRT_PORT:-8888}"
 HOST="${BRT_HOST:-127.0.0.1}"
 
 # --- pick Python interpreter ------------------------------------------
@@ -43,14 +43,27 @@ fi
 echo "[run_web] using: $("$PY" --version 2>&1) ($(which "$PY"))"
 
 # --- ensure ui deps ---------------------------------------------------
-if ! "$PY" -c 'import voila, ipywidgets' 2>/dev/null; then
+if ! "$PY" -c 'import voila, ipywidgets, ipykernel' 2>/dev/null; then
     echo "[run_web] installing web-UI dependencies (this can take a minute on first run)…"
     # Prefer project install via pyproject.toml [ui] extra.
     if ! "$PY" -m pip install --quiet --disable-pip-version-check -e ".[ui]"; then
         echo "ERROR: pip install failed. Try manually:"
-        echo "         $PY -m pip install 'ipywidgets>=8.0' 'voila>=0.5'"
+        echo "         $PY -m pip install 'ipywidgets>=8.0' 'voila>=0.5' 'ipykernel>=6.0'"
         exit 1
     fi
+fi
+
+# --- ensure a Python kernelspec is registered -------------------------
+# On fresh Python installs (python.org on Windows in particular) the
+# ipykernel package is importable but no kernelspec is registered, and
+# Voilà then returns 500 "No Jupyter kernel for language 'python' found".
+# Register once, idempotently.
+if ! "$PY" -c 'from jupyter_client.kernelspec import find_kernel_specs as f; import sys; sys.exit(0 if "python3" in f() else 1)' 2>/dev/null; then
+    echo "[run_web] registering Python kernelspec for Voilà…"
+    "$PY" -m ipykernel install --user --name python3 --display-name "Python 3" >/dev/null 2>&1 || {
+        echo "WARNING: could not register kernelspec. Run manually if Voilà errors:"
+        echo "           $PY -m ipykernel install --user --name python3"
+    }
 fi
 
 # --- check port is free ----------------------------------------------
@@ -67,7 +80,7 @@ finally:
     :
 else
     echo "ERROR: port $PORT on $HOST is already in use."
-    echo "       Pick another one: BRT_PORT=8867 ./run_web.sh"
+    echo "       Pick another one: BRT_PORT=8889 ./run_web.sh"
     exit 1
 fi
 

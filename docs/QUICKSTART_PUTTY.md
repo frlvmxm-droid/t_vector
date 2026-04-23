@@ -25,10 +25,10 @@
 2. **Session** → `Host Name: <логин>@<ip-или-hostname>`, `Port: 22`.
 3. Слева: **Connection → SSH → Tunnels**.
 4. Заполните:
-   - `Source port`: `8866`
-   - `Destination`: `127.0.0.1:8866`
+   - `Source port`: `8888`
+   - `Destination`: `127.0.0.1:8888`
    - Оставьте `Local` + `Auto`
-   - Нажмите **Add** — в списке появится `L8866 127.0.0.1:8866`.
+   - Нажмите **Add** — в списке появится `L8888 127.0.0.1:8888`.
 5. Вернитесь на **Session** → введите имя в `Saved Sessions` → **Save**
    (чтобы не настраивать каждый раз).
 6. **Open** → логиньтесь.
@@ -53,20 +53,20 @@ uv sync --frozen --extra ml --extra ui
 ```bash
 cd ~/t_vector   # если не там
 PYTHONPATH=. uv run voila notebooks/ui.ipynb \
-    --port=8866 --no-browser --Voila.ip=127.0.0.1
+    --port=8888 --no-browser --Voila.ip=127.0.0.1
 ```
 
 Увидите:
 ```
 [Voila] Voilà is running at:
-http://127.0.0.1:8866/
+http://127.0.0.1:8888/
 ```
 
 **Не закрывайте PuTTY** — пока он открыт, работает и сервер, и туннель.
 
 ### Шаг 4. В браузере на Windows
 
-Откройте: **http://localhost:8866/**
+Откройте: **http://localhost:8888/**
 
 Первый рендер занимает ~30–60 секунд (Voilà поднимает Python-кернел и
 импортирует sklearn/ipywidgets) — экран белый, это нормально. Потом
@@ -101,12 +101,12 @@ http://127.0.0.1:8866/
 4. Запустите Voilà через Jupyter-proxy:
    ```bash
    cd ~/t_vector
-   PYTHONPATH=. voila notebooks/ui.ipynb --port=8866 --no-browser \
+   PYTHONPATH=. voila notebooks/ui.ipynb --port=8888 --no-browser \
        --Voila.ip=127.0.0.1
    ```
 5. В браузере откройте (замените `<you>` на ваш логин):
    ```
-   https://hub.company.com/user/<you>/proxy/8866/
+   https://hub.company.com/user/<you>/proxy/8888/
    ```
    (нужен пакет `jupyter-server-proxy`, который обычно уже установлен
    на Hub).
@@ -119,8 +119,8 @@ http://127.0.0.1:8866/
 
 1. В JupyterLab → терминал → запустите Voilà как в Варианте B шаг 4.
 2. В PuTTY откройте **второе** SSH-соединение к этому же хосту с
-   пробросом `L8866 → 127.0.0.1:8866` (как в Варианте A шаг 1).
-3. В браузере: **http://localhost:8866/**.
+   пробросом `L8888 → 127.0.0.1:8888` (как в Варианте A шаг 1).
+3. В браузере: **http://localhost:8888/**.
 
 ---
 
@@ -148,10 +148,10 @@ http://127.0.0.1:8866/
 
 | Симптом | Решение |
 |---|---|
-| В браузере `ERR_CONNECTION_REFUSED` | Туннель не поднят. PuTTY → Tunnels — есть ли `L8866`? Или Voilà упал в терминале. |
+| В браузере `ERR_CONNECTION_REFUSED` | Туннель не поднят. PuTTY → Tunnels — есть ли `L8888`? Или Voilà упал в терминале. |
 | Blank page / бесконечная загрузка | Подождите 60 сек — первый кернел медленно стартует. Если больше — смотрите stderr Voilà в PuTTY. |
 | `ModuleNotFoundError: ui_widgets` | Запускаете не из корня репо. `cd ~/t_vector` перед `voila`, обязательно `PYTHONPATH=.`. |
-| `Address already in use` на 8866 | Занято прошлым запуском. `pkill -f voila` или `--port=8867`. |
+| `Address already in use` на 8888 | Занято прошлым запуском. `pkill -f voila` или `--port=8889`. |
 | `ImportError: ipywidgets` | `pip install ipywidgets voila` (или `uv sync --extra ui`). |
 | Большие файлы виснут на upload | Не грузите через браузер — используйте «Путь:» на сервере. |
 | `UNTRUSTED_MODEL_PATH` при Apply | В UI появится prompt с SHA-256 — подтвердите «Да». Доверенные хеши: `~/.classification_tool/trusted_models.json`. |
