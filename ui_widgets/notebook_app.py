@@ -24,8 +24,9 @@ def build_app() -> Any:
     )
     from ui_widgets.session import DebouncedSaver, load_last_session
     from ui_widgets.theme import (
-        ACCENT2,
-        MUTED,
+        DEFAULT_THEME,
+        apply_theme,
+        available_themes,
         inject_css,
         status_badge,
     )
@@ -36,13 +37,50 @@ def build_app() -> Any:
     apply_p, apply_widgets, apply_snap = build_apply_panel()
     cluster_p, cluster_widgets, cluster_snap = build_cluster_panel()
 
+    # ── Theme switcher widget (Sprint 2) ────────────────────────────────
+    # ToggleButtons holds the active theme name; wiring through
+    # widgets_by_key/snap_fn propagates it to ``last_session.json`` under
+    # the ``ui.theme`` key, on the same debounced write path as panel state.
+    theme_options = available_themes()
+    theme_picker = w.ToggleButtons(
+        options=[
+            ("Teal",  "dark-teal"),
+            ("Paper", "paper"),
+            ("CRT",   "amber-crt"),
+        ],
+        value=DEFAULT_THEME,
+        description="",
+        button_style="",
+        layout=w.Layout(width="96%", margin="2px 0 6px 0"),
+        style={"button_width": "32%"},
+    )
+
+    def _on_theme_change(change: Any) -> None:
+        new_name = change.get("new") if isinstance(change, dict) else None
+        if not isinstance(new_name, str) or new_name not in theme_options:
+            return
+        try:
+            apply_theme(new_name)
+        except ValueError:
+            return
+
+    theme_picker.observe(_on_theme_change, names="value")
+
+    theme_widgets = {"ui.theme": theme_picker}
+    theme_snap = lambda: {"ui.theme": theme_picker.value}
+
     # ── Session save/restore ────────────────────────────────────────────
     _wire_session(
-        widgets_by_key={**train_widgets, **apply_widgets, **cluster_widgets},
-        snap_fns=(train_snap, apply_snap, cluster_snap),
+        widgets_by_key={
+            **train_widgets, **apply_widgets, **cluster_widgets, **theme_widgets,
+        },
+        snap_fns=(train_snap, apply_snap, cluster_snap, theme_snap),
         load_last_session=load_last_session,
         debounced_saver_cls=DebouncedSaver,
     )
+
+    # Restore propagated to widget.value above; mirror it into CSS now.
+    apply_theme(theme_picker.value)
 
     # Last-active workflow panel (0..2) so dialog close returns to it.
     last_panel_index = {"value": 1}
@@ -96,9 +134,9 @@ def build_app() -> Any:
         title, sub = panel_titles[index]
         header_title_html.value = (
             "<div class='brt-header-title'>"
-            f"<span style='color:{ACCENT2};font-weight:800'>BankReasonTrainer</span>"
+            "<span class='brt-brand-strong'>BankReasonTrainer</span>"
             f"<span class='muted'> — {title}</span>"
-            f"<span style='color:{MUTED}'>  ·  {sub}</span>"
+            f"<span class='brt-header-sub'>  ·  {sub}</span>"
             "</div>"
         )
 
@@ -147,6 +185,7 @@ def build_app() -> Any:
     )
     workflow_title = w.HTML("<div class='brt-nav-section'>WORKFLOW</div>")
     context_title = w.HTML("<div class='brt-nav-section'>КОНТЕКСТ</div>")
+    theme_title = w.HTML("<div class='brt-theme-switch-title'>ТЕМА</div>")
     hw_card = w.HTML(_hardware_card_html())
     footer_html = w.HTML("<div class='brt-footer'>v3.4.1 · build 1248</div>")
 
@@ -155,6 +194,7 @@ def build_app() -> Any:
             brand_html,
             workflow_title, *nav_buttons,
             context_title, *context_buttons,
+            theme_title, theme_picker,
             hw_card,
             footer_html,
         ],
