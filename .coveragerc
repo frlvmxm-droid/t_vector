@@ -9,7 +9,6 @@ omit =
     setup.py
     setup_env.py
     download_sbert_models.py
-    ctk_migration_pack/*
     # Optional heavy-stack modules that require torch + transformers
     # (and a downloaded HF checkpoint) to exercise meaningfully. Covered
     # by nightly integration runs, not unit tests.
@@ -21,6 +20,19 @@ omit =
     utils/t5_summarizer.py
     # Legacy entrypoint kept for back-compat
     bank_reason_trainer/__main__.py
+    # Voilà UI panels — ipywidgets-lifecycle code; covered end-to-end
+    # by tests/test_voila_smoke.py + the `web-smoke` CI job, not by
+    # unit tests.  Pure-logic modules ui_widgets/theme.py and
+    # ui_widgets/session.py stay IN coverage (71% / 88%).
+    ui_widgets/apply_panel.py
+    ui_widgets/cluster_panel.py
+    ui_widgets/train_panel.py
+    ui_widgets/notebook_app.py
+    ui_widgets/io.py
+    ui_widgets/predictions_table.py
+    ui_widgets/progress.py
+    ui_widgets/trust_prompt.py
+    ui_widgets/dialogs/*
 
 [report]
 exclude_also =

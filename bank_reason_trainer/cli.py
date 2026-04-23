@@ -219,7 +219,7 @@ def cmd_cluster(args: argparse.Namespace) -> int:
         prepared = ClusteringWorkflow.prepare_only(
             files_snapshot=list(args.files or []), snap=snap,
         )
-        summary = {
+        summary: Dict[str, Any] = {
             "stage": "prepare_inputs",
             "files": list(prepared.files_snapshot),
             "role": prepared.role_context.role_label,

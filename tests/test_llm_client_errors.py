@@ -12,6 +12,17 @@ import app_cluster_service
 from llm_client import is_safe_url
 
 
+@pytest.fixture(autouse=True)
+def _disable_offline_stub(monkeypatch):
+    # These tests drive the real LLMClient.complete_text path — retries,
+    # circuit-breaker, URL/SSRF guards.  ADR-0004 offline mode (env
+    # ``BRT_LLM_PROVIDER=offline``) short-circuits the entire request
+    # before any monkeypatched ``urlopen`` gets called, so per-test we
+    # remove it so the guard code is exercised end-to-end.
+    monkeypatch.delenv("BRT_LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("BRT_LLM_REPLAY", raising=False)
+
+
 def _kwargs():
     return dict(
         provider="openai",

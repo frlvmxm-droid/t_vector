@@ -65,5 +65,8 @@ def test_cancel_event_clear_after_raise():
     try:
         _check_cancelled(event)
     except WorkflowCancelled:
+        # Expected — we only want to assert on the event's state after
+        # the raise, the exception itself has nothing more to check
+        # here (it's verified by the other tests in this module).
         pass
     assert event.is_set(), "_check_cancelled must not clear the event"
