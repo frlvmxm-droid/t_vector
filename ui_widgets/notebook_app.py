@@ -24,8 +24,7 @@ def build_app() -> Any:
     )
     from ui_widgets.session import DebouncedSaver, load_last_session
     from ui_widgets.theme import (
-        ACCENT2,
-        MUTED,
+        COLORS,
         inject_css,
         status_badge,
     )
@@ -96,9 +95,9 @@ def build_app() -> Any:
         title, sub = panel_titles[index]
         header_title_html.value = (
             "<div class='brt-header-title'>"
-            f"<span style='color:{ACCENT2};font-weight:800'>BankReasonTrainer</span>"
+            f"<span style='color:{COLORS['accent2']};font-weight:800'>BankReasonTrainer</span>"
             f"<span class='muted'> — {title}</span>"
-            f"<span style='color:{MUTED}'>  ·  {sub}</span>"
+            f"<span style='color:{COLORS['muted']}'>  ·  {sub}</span>"
             "</div>"
         )
 
